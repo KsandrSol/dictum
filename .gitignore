@@ -1,0 +1,23 @@
+# dependencies
+node_modules/
+bun.lockb
+
+# build output
+dist/
+*.tsbuildinfo
+
+# logs
+*.log
+
+# editor / os
+.DS_Store
+.idea/
+.vscode/
+
+# local (per-user) Claude Code settings and machine-local agent context
+.claude/settings.local.json
+CLAUDE.local.md
+
+# temp
+*.tmp
+/tmp/

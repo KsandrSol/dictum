@@ -1,0 +1,47 @@
+name: release
+
+# Runs only when a version tag is pushed (e.g. `git tag v0.1.0 && git push --tags`).
+# Until then it never triggers. Building is cross-compiled by Bun from one runner.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  binaries:
+    name: Build standalone binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck, lint, test
+        run: |
+          bunx tsc --noEmit
+          bunx biome check .
+          bun test
+
+      - name: Build binaries (linux + darwin, x64 + arm64)
+        run: bash scripts/build-binaries.sh
+
+      - name: Upload to the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/dictum-linux-x64
+            dist/dictum-linux-arm64
+            dist/dictum-darwin-x64
+            dist/dictum-darwin-arm64
+          generate_release_notes: true
+
+  # npm publish is intentionally a manual step (the maintainer runs `npm publish`).
+  # To automate it later, add a job here gated on an NPM_TOKEN secret.
