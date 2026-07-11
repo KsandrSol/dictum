@@ -1,7 +1,7 @@
 {
   "name": "dictum-cli",
   "version": "0.1.0",
-  "description": "Voice-to-prompt CLI: dictate a thought, get a polished prompt in your clipboard",
+  "description": "Prompt-polishing CLI with an MCP host-brain overlay: type or dictate a rough thought, get a clear, structured prompt — in your clipboard or right inside your coding agent",
   "type": "module",
   "bin": {
     "dictum": "bin/dictum.js"

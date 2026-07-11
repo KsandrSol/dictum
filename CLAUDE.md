@@ -1,6 +1,6 @@
-# Dictum — voice-to-prompt CLI
+# Dictum — prompt-polishing CLI
 
-Open-source tool: speak a thought → STT → LLM polishing → a sharp prompt in your clipboard / stdout. The MCP host-brain overlay (prompts `polish`/`spec`/`decompose`, the `polish_brief` tool, and the zero-install `/dictum` command) is the flagship surface.
+Open-source tool: type or speak a thought → STT (voice only) → LLM polishing → a sharp prompt in your clipboard / stdout. The MCP host-brain overlay (prompts `polish`/`spec`/`decompose`, the `polish_brief` tool, and the zero-install `/dictum` command) is the flagship surface.
 
 ## Architecture — orthogonality (the prime rule)
 

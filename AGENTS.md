@@ -1,6 +1,6 @@
 # Dictum — agent instructions
 
-Voice-to-prompt CLI: speak a thought → STT → LLM polishing → a sharp prompt in your clipboard / stdout. The MCP host-brain overlay (prompts `polish`/`spec`/`decompose`, the `polish_brief` tool, and the `/dictum` command) is the flagship surface: YOUR model executes Dictum's brief with this session's context.
+Prompt-polishing CLI: type or speak a thought → STT (voice only) → LLM polishing → a sharp prompt in your clipboard / stdout. The MCP host-brain overlay (prompts `polish`/`spec`/`decompose`, the `polish_brief` tool, and the `/dictum` command) is the flagship surface: YOUR model executes Dictum's brief with this session's context.
 
 ## Architecture — orthogonality (the prime rule)
 

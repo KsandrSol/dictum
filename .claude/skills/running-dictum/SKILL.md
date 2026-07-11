@@ -1,6 +1,6 @@
 ---
 name: running-dictum
-description: How to run, test, and verify Dictum (voice-to-prompt CLI) in this repo — commands, environment facts, e2e paths. Use when asked to run the app, verify a change, or debug locally.
+description: How to run, test, and verify Dictum (prompt-polishing CLI, voice included) in this repo — commands, environment facts, e2e paths. Use when asked to run the app, verify a change, or debug locally.
 ---
 
 # Running Dictum

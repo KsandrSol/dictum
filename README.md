@@ -1,10 +1,11 @@
 # dictum
 
-**Dictate a thought. Get a polished prompt in your clipboard.**
+**Type or dictate a thought. Get a polished prompt in your clipboard.**
 
-`dictum` is a voice-to-prompt CLI. Speak a rough idea; it transcribes the audio,
-an LLM rewrites it into a clean, structured prompt, and the result lands in your
-clipboard or on stdout — ready to paste into Claude, an editor, or a shell pipe.
+`dictum` is a prompt-polishing CLI with built-in voice input. Type a rough idea
+(or speak it — the audio is transcribed first), an LLM rewrites it into a clean,
+structured prompt, and the result lands in your clipboard or on stdout — ready
+to paste into Claude, an editor, or a shell pipe.
 It works over SSH (via OSC52), runs fully self-hosted, and is provider-agnostic.
 Connected [over MCP](#dictum-inside-your-agent-mcp), it becomes a prompt overlay
 for the coding agent you already use: your model, your context, Dictum's rules.
