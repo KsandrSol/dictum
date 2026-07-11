@@ -165,7 +165,10 @@ Dictum proposes; you decide.
   polishing at all.
 - **`build_spec(text)`** — server-side spec via the `spec` template.
 
-The server speaks plain MCP over stdio with no client-specific branching —
+The server speaks plain MCP over stdio; the only client-specific behavior is
+the brief's vendor prompting tips, picked from `clientInfo.name` at initialize
+(Claude → Anthropic tips, Codex → OpenAI, anything else → generic; see the
+`provider` override on `polish_brief`).
 `tests/mcp_server.test.ts` and `tests/mcp_prompts.test.ts` verify the protocol
 surface (prompts + tools) against the official `@modelcontextprotocol/sdk`
 client, the same library the hosts above are built on. Server-side tools reuse

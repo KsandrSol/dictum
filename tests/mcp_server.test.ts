@@ -8,6 +8,9 @@ import {
   handleBuildSpec,
   handlePolishBrief,
   handlePolishPrompt,
+  instrumentWireTracking,
+  noteWireMessage,
+  noteWireReply,
   track,
   waitForIdle,
 } from "../src/mcp/server.ts"
@@ -444,5 +447,43 @@ describe("in-flight tracking (EOF drain)", () => {
     const t0 = performance.now()
     await waitForIdle(5000)
     expect(performance.now() - t0).toBeLessThan(50) // counter drained despite the throw
+  })
+})
+
+describe("wire-level request tracking (Bun 1.2 EOF race)", () => {
+  test("a parsed request keeps waitForIdle busy until its response goes out", async () => {
+    noteWireMessage({ jsonrpc: "2.0", id: 91, method: "tools/call", params: {} })
+    setTimeout(() => noteWireReply({ jsonrpc: "2.0", id: 91, result: {} }), 150)
+    const t0 = performance.now()
+    await waitForIdle(5000)
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(100) // held by the wire, not by a handler
+  })
+
+  test("notifications and client responses never become pending", async () => {
+    noteWireMessage({ jsonrpc: "2.0", method: "notifications/initialized" }) // no id
+    noteWireMessage({ jsonrpc: "2.0", id: 92, result: {} }) // response shape, no method
+    const t0 = performance.now()
+    await waitForIdle(5000)
+    expect(performance.now() - t0).toBeLessThan(50)
+  })
+
+  test("instrumentWireTracking mirrors traffic and preserves the original dispatch", async () => {
+    const dispatched: unknown[] = []
+    const sent: unknown[] = []
+    const fake = {
+      onmessage: (m: unknown) => void dispatched.push(m),
+      send: async (m: unknown) => void sent.push(m),
+      start: async () => {},
+      close: async () => {},
+    }
+    instrumentWireTracking(fake as unknown as Parameters<typeof instrumentWireTracking>[0])
+
+    fake.onmessage({ jsonrpc: "2.0", id: 93, method: "tools/call", params: {} })
+    expect(dispatched).toHaveLength(1) // the SDK still receives the message
+    setTimeout(() => void fake.send({ jsonrpc: "2.0", id: 93, result: {} }), 150)
+    const t0 = performance.now()
+    await waitForIdle(5000)
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(100)
+    expect(sent).toHaveLength(1) // the response still reached the client
   })
 })

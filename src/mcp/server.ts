@@ -24,6 +24,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
 import { ErrorCode, GetPromptRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
@@ -80,10 +81,49 @@ export function track<A extends unknown[], R>(
   }
 }
 
-/** Resolve once no request is in flight (or the drain timeout elapses). */
+// The SDK hands a parsed request to its handler on a later microtask; on
+// Bun 1.2 stdin 'end' lands inside that gap, when no handler has started yet
+// and inflight is still 0. Idle is therefore also judged at the wire level:
+// every request the transport parsed must get its response before exit.
+const pendingWire = new Set<string | number>()
+
+/** Record a client→server wire message; requests (id + method) become pending. */
+export function noteWireMessage(message: unknown): void {
+  const m = message as { id?: unknown; method?: unknown } | null
+  if (m && typeof m.method === "string" && (typeof m.id === "string" || typeof m.id === "number")) {
+    pendingWire.add(m.id)
+  }
+}
+
+/** Record a server→client wire message; responses (id, no method) settle requests. */
+export function noteWireReply(message: unknown): void {
+  const m = message as { id?: unknown; method?: unknown } | null
+  if (m && m.method === undefined && (typeof m.id === "string" || typeof m.id === "number")) {
+    pendingWire.delete(m.id)
+  }
+}
+
+/**
+ * Wrap a connected transport so pendingWire mirrors the actual traffic.
+ * Must run after connect() — that is when the protocol assigns onmessage.
+ */
+export function instrumentWireTracking(transport: Transport): void {
+  const dispatch = transport.onmessage
+  transport.onmessage = (message, extra) => {
+    noteWireMessage(message)
+    dispatch?.(message, extra)
+  }
+  const sendRaw = transport.send.bind(transport)
+  transport.send = (message, options) => {
+    noteWireReply(message)
+    return sendRaw(message, options)
+  }
+}
+
+/** Resolve once no request is in flight or awaiting dispatch (or the drain timeout elapses). */
 export async function waitForIdle(timeoutMs = 15000): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  while (inflight > 0 && Date.now() < deadline) {
+  while ((inflight > 0 || pendingWire.size > 0) && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 25))
   }
 }
@@ -302,6 +342,7 @@ export async function startMcpServer(): Promise<void> {
   const server = createMcpServer({ polish: polishFromConfig(config), modes })
   const transport = new StdioServerTransport()
   await server.connect(transport)
+  instrumentWireTracking(transport)
   process.stderr.write("dictum mcp: host-brain prompts + tools ready on stdio\n")
 
   await new Promise<void>((resolve) => {
