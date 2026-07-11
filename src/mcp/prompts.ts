@@ -27,6 +27,42 @@ export function isHostPromptKind(name: string): name is HostPromptKind {
   return (HOST_PROMPT_KINDS as readonly string[]).includes(name)
 }
 
+export const PROVIDER_FAMILIES = ["anthropic", "openai", "generic"] as const
+export type ProviderFamily = (typeof PROVIDER_FAMILIES)[number]
+
+export function isProviderFamily(name: string): name is ProviderFamily {
+  return (PROVIDER_FAMILIES as readonly string[]).includes(name)
+}
+
+/**
+ * Map an MCP client name (initialize.clientInfo.name) to the model family
+ * whose vendor prompting advice should season the brief. Hosts where the
+ * model is user-selectable and unknown (Cursor, Windsurf) stay generic.
+ */
+export function detectProviderFamily(clientName: string | undefined): ProviderFamily {
+  if (!clientName) return "generic"
+  if (/claude|anthropic/i.test(clientName)) return "anthropic"
+  if (/codex|openai|chatgpt|gpt/i.test(clientName)) return "openai"
+  return "generic"
+}
+
+/**
+ * Vendor prompting guidance appended after the canon when the host's model
+ * family is known: the polished prompt will be executed by that same model,
+ * so its vendor's own prompt-engineering advice applies to the rewrite.
+ */
+const PROVIDER_TIPS: Record<ProviderFamily, string> = {
+  anthropic: `Model-specific tips (the polished prompt will run on an Anthropic Claude model):
+- Separate data from instructions with XML-style tags, the way this brief wraps the draft.
+- Give the why behind non-obvious constraints — Claude follows motivated instructions more faithfully.
+- If the output has a fixed shape, show it: a one-line example beats a paragraph of description.`,
+  openai: `Model-specific tips (the polished prompt will run on an OpenAI model):
+- Be literal and complete: state every constraint explicitly and remove contradictions — the model follows instructions to the letter and infers little.
+- Structure with clear delimiters (headings or tags), task first.
+- Pin down the output format and length explicitly; for multi-step work, say what "done" means.`,
+  generic: "",
+}
+
 /** Registration metadata, kept next to the brief texts so they evolve together. */
 export const HOST_PROMPT_META: Record<
   HostPromptKind,
@@ -97,8 +133,13 @@ function analysisBlock(draft: string): string {
  * propose-don't-replace response flow. A draft that is empty (or has no word
  * characters at all) → a short "ask the user" brief instead.
  */
-export function buildHostBrief(kind: HostPromptKind, draft: string): string {
+export function buildHostBrief(
+  kind: HostPromptKind,
+  draft: string,
+  family: ProviderFamily = "generic",
+): string {
   const meta = HOST_PROMPT_META[kind]
+  const tips = PROVIDER_TIPS[family]
   const trimmed = draft.trim()
   if (!trimmed || !/[\p{L}\p{N}]/u.test(trimmed)) {
     return `The user invoked Dictum (${kind}) without a draft. Ask them what rough thought they want turned into a ${meta.deliverable}, then stop — do not guess and do not start any work.`
@@ -117,7 +158,7 @@ ${analysisBlock(trimmed)}
 
 Rewriting rules:
 ${RULES[kind]}
-
+${tips ? `\n${tips}\n` : ""}
 Then respond exactly like this:
 1. Show the ${meta.deliverable} in a fenced block, followed by any "Open question:" lines.
 2. Add one line on what you changed and why.
@@ -131,9 +172,15 @@ If the draft looks cut off mid-sentence (slash-command argument parsing can trun
 }
 
 /** MCP `prompts/get` payload: the brief as a single user message. */
-export function buildHostPrompt(kind: HostPromptKind, draft: string): GetPromptResult {
+export function buildHostPrompt(
+  kind: HostPromptKind,
+  draft: string,
+  family: ProviderFamily = "generic",
+): GetPromptResult {
   return {
     description: HOST_PROMPT_META[kind].description,
-    messages: [{ role: "user", content: { type: "text", text: buildHostBrief(kind, draft) } }],
+    messages: [
+      { role: "user", content: { type: "text", text: buildHostBrief(kind, draft, family) } },
+    ],
   }
 }

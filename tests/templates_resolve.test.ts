@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { availableTemplateNames, resolveTemplate } from "../src/polisher/templates.ts"
@@ -84,6 +84,108 @@ describe("availableTemplateNames", () => {
       expect(names).toContain("alpha")
       expect(names).not.toContain("ignore")
       expect(names).toContain("agent-prompt")
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+describe("resolveTemplate — traversal guard", () => {
+  const ATTACKS = [
+    "../../README",
+    "..",
+    "../x",
+    "..\\..\\README",
+    "/etc/passwd",
+    "a/b",
+    "a\\b",
+    "",
+    ".hidden",
+  ]
+
+  test("path-like and traversal names are rejected with a clear error", async () => {
+    for (const name of ATTACKS) {
+      await expect(resolveTemplate(name, "tests/fixtures")).rejects.toThrow(/Invalid template name/)
+    }
+  })
+
+  test("traversal is rejected even without a user dir", async () => {
+    await expect(resolveTemplate("../../README")).rejects.toThrow(/Invalid template name/)
+  })
+
+  test("legitimate names still resolve: built-ins and user overrides", async () => {
+    expect((await resolveTemplate("commit")).name).toBe("commit")
+    const { dir, cleanup } = withUserDir({ "my-mode.v2.md": "Custom body." })
+    try {
+      expect((await resolveTemplate("my-mode.v2", dir)).instruction).toBe("Custom body.")
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+describe("availableTemplateNames ↔ resolveTemplate consistency", () => {
+  test("invalid stems (unicode, spaces, dots) are not advertised", async () => {
+    const { dir, cleanup } = withUserDir({
+      "русский.md": "b",
+      "my template.md": "b",
+      "..sneaky.md": "b",
+      ".hidden.md": "b",
+      "good-slug.v2.md": "b",
+    })
+    try {
+      const names = await availableTemplateNames(dir)
+      expect(names).toContain("good-slug.v2")
+      for (const bad of ["русский", "my template", "..sneaky", ".hidden"]) {
+        expect(names).not.toContain(bad)
+      }
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("every advertised name resolves (listing and resolver share the validator)", async () => {
+    const { dir, cleanup } = withUserDir({
+      "custom.md": "Custom.",
+      "не-слаг.md": "b",
+    })
+    try {
+      for (const name of await availableTemplateNames(dir)) {
+        const t = await resolveTemplate(name, dir)
+        expect(t.name).toBe(name)
+      }
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+describe("resolver hardening: prototype names, directories, reserved names", () => {
+  test("Object.prototype member names miss cleanly (no TypeError)", async () => {
+    for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      await expect(resolveTemplate(name)).rejects.toThrow(/Unknown template/)
+    }
+  })
+
+  test("a directory named *.md is not advertised as a template", async () => {
+    const { dir, cleanup } = withUserDir({})
+    try {
+      mkdirSync(join(dir, "folder.md"))
+      const names = await availableTemplateNames(dir)
+      expect(names).not.toContain("folder")
+    } finally {
+      cleanup()
+    }
+  })
+
+  test("Windows reserved device names are rejected and never advertised", async () => {
+    const { dir, cleanup } = withUserDir({ "CON.md": "b", "nul.md": "b", "com1.md": "b" })
+    try {
+      for (const name of ["CON", "nul", "com1", "LPT9", "aux.backup"]) {
+        await expect(resolveTemplate(name, dir)).rejects.toThrow(/Invalid template name/)
+      }
+      const names = await availableTemplateNames(dir)
+      for (const bad of ["CON", "nul", "com1"]) expect(names).not.toContain(bad)
     } finally {
       cleanup()
     }

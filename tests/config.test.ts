@@ -19,7 +19,6 @@ describe("config defaults", () => {
     expect(DEFAULT_CONFIG.polisher.mode).toBe("llm")
     expect(DEFAULT_CONFIG.polisher.scoreThreshold).toBe(80)
     expect(DEFAULT_CONFIG.sink.target).toBe("clipboard")
-    expect(DEFAULT_CONFIG.recorder.backend).toBe("sox")
     expect(DEFAULT_CONFIG.recorder.stopMode).toBe("enter")
     expect(DEFAULT_CONFIG.recorder.energyThreshold).toBe(0.015)
     expect(DEFAULT_CONFIG.recorder.silenceTimeout).toBe(2.0)

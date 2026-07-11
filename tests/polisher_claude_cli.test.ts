@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { Template } from "../src/core/types.ts"
-import { ClaudeCliPolisher } from "../src/polisher/claude_cli.ts"
+import { ClaudeCliPolisher, versionAtLeast } from "../src/polisher/claude_cli.ts"
 
 const TEMPLATE: Template = {
   name: "agent-prompt",
@@ -65,5 +65,48 @@ describe("ClaudeCliPolisher", () => {
   test("surfaces a launch error for a missing binary", async () => {
     const p = new ClaudeCliPolisher({ bin: "definitely-not-a-real-binary-xyz123" })
     await expect(p.polish("x", TEMPLATE)).rejects.toThrow(/Cannot launch/)
+  })
+})
+
+describe("ClaudeCliPolisher — prompt transport", () => {
+  test("prompt arrives via stdin, never via argv (no /proc/cmdline leak)", async () => {
+    const { bin, cleanup } = scriptBin('input=$(cat); printf "argv:%s|stdin:%s" "$*" "$input"')
+    try {
+      const out = await new ClaudeCliPolisher({ bin }).polish("secret transcript", TEMPLATE)
+      expect(out).toContain("stdin:Rewrite.\nsecret transcript")
+      expect(out).toContain("argv:-p --output-format text --safe-mode") // flags on argv…
+      expect(/argv:[^|]*secret/.test(out)).toBe(false) // …but never the transcript
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+describe("ClaudeCliPolisher — least privilege", () => {
+  test("every invocation carries the pinned safety flags", async () => {
+    const { bin, cleanup } = scriptBin('cat > /dev/null; printf "argv:%s" "$*"')
+    try {
+      const out = await new ClaudeCliPolisher({ bin }).polish("x", TEMPLATE)
+      expect(out).toContain("--safe-mode")
+      expect(out).toContain("--no-session-persistence")
+      expect(out).toContain("--tools") // with an empty value: disables ALL tools
+      expect(out).toContain("--disallowedTools")
+      for (const tool of ["Bash", "Edit", "Write", "Read", "WebFetch"]) {
+        expect(out).toContain(tool)
+      }
+    } finally {
+      cleanup()
+    }
+  })
+})
+
+describe("versionAtLeast", () => {
+  test("orders dotted versions numerically, not lexically", () => {
+    expect(versionAtLeast("2.1.206", "2.1.169")).toBe(true)
+    expect(versionAtLeast("2.1.169", "2.1.169")).toBe(true)
+    expect(versionAtLeast("2.1.99", "2.1.169")).toBe(false) // lexical would say true
+    expect(versionAtLeast("2.0.500", "2.1.169")).toBe(false)
+    expect(versionAtLeast("3.0.0", "2.1.169")).toBe(true)
+    expect(versionAtLeast("2.1", "2.1.0")).toBe(true) // missing parts are zero
   })
 })

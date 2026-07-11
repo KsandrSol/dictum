@@ -18,6 +18,12 @@ dist/
 .claude/settings.local.json
 CLAUDE.local.md
 
+# secrets and registry credentials — never tracked
+.env
+.env.*
+!.env.example
+.npmrc
+
 # temp
 *.tmp
 /tmp/

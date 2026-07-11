@@ -33,8 +33,14 @@ function isSshSession(env: NodeJS.ProcessEnv): boolean {
 export function detectClipboard(
   env: NodeJS.ProcessEnv = process.env,
   which: Which = (b) => Bun.which(b),
+  hasTty: boolean = Boolean(process.stdout.isTTY || process.stderr.isTTY),
 ): ClipboardMechanism {
-  if (isSshSession(env)) {
+  // OSC52 writes an escape sequence to the terminal — without an interactive
+  // TTY (cron, CI, `ssh host cmd`) there is nowhere to write. In that case
+  // fall through: X11 forwarding / a local display may still provide a
+  // clipboard tool that works.
+  const ssh = isSshSession(env)
+  if (ssh && hasTty) {
     return { kind: "osc52", label: "OSC52 (SSH session)" }
   }
   if (env.WAYLAND_DISPLAY && which("wl-copy")) {
@@ -43,14 +49,25 @@ export function detectClipboard(
   if (which("pbcopy")) {
     return { kind: "command", label: "pbcopy (macOS)", argv: ["pbcopy"] }
   }
-  if (which("wl-copy")) {
-    return { kind: "command", label: "wl-copy (wayland)", argv: ["wl-copy"] }
-  }
-  if (which("xclip")) {
+  if (env.DISPLAY && which("xclip")) {
     return {
       kind: "command",
       label: "xclip (x11)",
       argv: ["xclip", "-selection", "clipboard"],
+    }
+  }
+  if (ssh) {
+    return {
+      kind: "none",
+      label: "SSH session without an interactive terminal (OSC52 unavailable)",
+    }
+  }
+  // A display-bound tool on PATH without a display would fail at copy time
+  // ("Can't open display") — report it as unavailable, not as ok.
+  if (which("wl-copy") || which("xclip")) {
+    return {
+      kind: "none",
+      label: "clipboard tool found, but no display (DISPLAY/WAYLAND_DISPLAY unset)",
     }
   }
   return { kind: "none", label: "no clipboard tool found" }
@@ -127,9 +144,10 @@ export class ClipboardSink implements Sink {
       }
       return
     }
+    // Lead with the detector's diagnosis — "OSC52 needs an interactive
+    // terminal" must not be answered with "OSC52 is automatic".
     throw new Error(
-      "No clipboard tool found. Install xclip / wl-clipboard, or use --stdout " +
-        "(over SSH, OSC52 is used automatically).",
+      `Clipboard unavailable: ${mech.label}. Use --stdout, or install xclip / wl-clipboard.`,
     )
   }
 }

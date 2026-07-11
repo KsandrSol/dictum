@@ -1,12 +1,52 @@
 /**
  * polisher/claude_cli.ts — Polisher that shells out to the `claude` CLI.
  *
- * Runs `claude -p "<instruction>\n<transcript>" --output-format text` with a
- * timeout. Uses the user's existing Claude Code auth (subscription), so no API
- * key is needed. The instruction comes from the selected Template.
+ * Runs `claude -p --output-format text` with the instruction + transcript
+ * piped via stdin (never argv: transcripts must not leak into the process
+ * list — /proc/<pid>/cmdline is world-readable on the same host). Uses the
+ * user's existing Claude Code auth (subscription), so no API key is needed.
+ * The instruction comes from the selected Template.
+ *
+ * Least privilege: the polisher is a pure text-in/text-out call, so the CLI
+ * runs with --safe-mode (no CLAUDE.md, hooks, plugins, MCP servers, skills),
+ * --no-session-persistence (no transcript saved to disk) and all standard
+ * tools denied. Project-aware polishing is the host-brain MCP path's job,
+ * not this subprocess's.
  */
 
 import type { Polisher, Template } from "../core/types.ts"
+
+/**
+ * Oldest Claude Code that understands every safety flag below (--safe-mode
+ * shipped in 2.1.169). doctor checks the installed CLI against this.
+ */
+export const CLAUDE_CLI_MIN_VERSION = "2.1.169"
+
+/** Compare dotted numeric versions; true when `a >= b`. Pure, for testing. */
+export function versionAtLeast(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number)
+  const pb = b.split(".").map(Number)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x !== y) return x > y
+  }
+  return true
+}
+
+/**
+ * Hardening flags every polisher invocation carries (pinned by tests).
+ * `--tools ""` disables ALL tools (future-proof); the denylist stays as a
+ * second belt for CLI versions where the empty allowlist is advisory.
+ */
+export const CLAUDE_CLI_SAFETY_ARGS = [
+  "--safe-mode",
+  "--no-session-persistence",
+  "--tools",
+  "",
+  "--disallowedTools",
+  "Bash,Edit,Write,Read,Glob,Grep,WebFetch,WebSearch,Task,NotebookEdit",
+] as const
 
 export type ClaudeCliOptions = {
   /** Binary name/path; defaults to "claude". */
@@ -30,13 +70,13 @@ export class ClaudeCliPolisher implements Polisher {
 
   async polish(text: string, template: Template): Promise<string> {
     const prompt = `${template.instruction}\n${text}`
-    const args = ["-p", prompt, "--output-format", "text"]
+    const args = ["-p", "--output-format", "text", ...CLAUDE_CLI_SAFETY_ARGS]
     if (this.model) args.push("--model", this.model)
 
     const spawn = () => {
       try {
         return Bun.spawn([this.bin, ...args], {
-          stdin: "ignore",
+          stdin: new TextEncoder().encode(prompt),
           stdout: "pipe",
           stderr: "pipe",
         })

@@ -9,6 +9,7 @@
  */
 
 import type { Config } from "./config.ts"
+import { CLAUDE_CLI_MIN_VERSION, versionAtLeast } from "./polisher/claude_cli.ts"
 import { detectClipboard } from "./sink/clipboard.ts"
 import { buildSttProviders } from "./stt/factory.ts"
 
@@ -27,17 +28,48 @@ function which(bin: string): string | null {
   return Bun.which(bin)
 }
 
-/** Check microphone capture availability (sox `rec`). */
-function checkMicrophone(): CheckResult {
-  const rec = which("rec") ?? which("sox")
+/**
+ * Check microphone capture availability. The recorder invokes exactly `rec`
+ * (sox's recording front-end), so a sox install without the `rec` shim must
+ * not report ok. Exported logic is pure for testing.
+ */
+export function micCheck(rec: string | null, sox: string | null): CheckResult {
   if (rec) {
     return { name: "microphone (sox)", status: "ok", detail: rec }
+  }
+  if (sox) {
+    return {
+      name: "microphone (sox)",
+      status: "warn",
+      detail: "sox found, but the 'rec' front-end is missing",
+      hint: "the recorder runs 'rec'; install the sox package that ships it or symlink rec → sox",
+    }
   }
   return {
     name: "microphone (sox)",
     status: "warn",
     detail: "sox/rec not found",
     hint: "live recording needs sox → apt install sox / brew install sox (file --input works without it)",
+  }
+}
+
+function checkMicrophone(): CheckResult {
+  return micCheck(which("rec"), which("sox"))
+}
+
+/**
+ * ffmpeg is required to transcode non-canonical WAV given via `--input`
+ * (canonical PCM16/16k/mono plays without it). Pure for testing.
+ */
+export function ffmpegCheck(path: string | null): CheckResult {
+  if (path) {
+    return { name: "ffmpeg (file input)", status: "ok", detail: path }
+  }
+  return {
+    name: "ffmpeg (file input)",
+    status: "warn",
+    detail: "ffmpeg not found",
+    hint: "non-canonical WAV via --input needs ffmpeg; canonical PCM16/16k/mono works without it",
   }
 }
 
@@ -71,8 +103,48 @@ async function checkStt(config: Config): Promise<CheckResult> {
   }
 }
 
+/**
+ * Read `<bin> --version` and extract the Claude Code version. Returns null —
+ * which the caller treats as a hard failure (fail closed) — on a non-zero
+ * exit, timeout, read failure, unparsable output, or output that lacks the
+ * "Claude Code" marker (any tool prints a dotted version; bash must not pass
+ * as the polisher). Timeout escalates SIGTERM → SIGKILL and fails
+ * unconditionally, even if the process produced output before dying; the
+ * stdout read is bounded so a pipe-holding grandchild cannot stall doctor.
+ * Exported (with an injectable deadline) for tests.
+ */
+export async function claudeCliVersion(bin: string, timeoutMs = 5000): Promise<string | null> {
+  try {
+    const started = performance.now()
+    const proc = Bun.spawn([bin, "--version"], { stdout: "pipe", stderr: "ignore" })
+    let timedOut = false
+    const term = setTimeout(() => {
+      timedOut = true
+      proc.kill("SIGTERM")
+    }, timeoutMs)
+    const kill = setTimeout(() => proc.kill("SIGKILL"), timeoutMs + 1000)
+    const outPromise = new Response(proc.stdout).text().catch(() => "")
+    const code = await proc.exited
+    clearTimeout(term)
+    clearTimeout(kill)
+    // Timers can't fire while the event loop is blocked, so the deadline is
+    // also enforced against monotonic time — event-loop phase order after an
+    // unblock is not guaranteed.
+    if (timedOut || code !== 0 || performance.now() - started > timeoutMs) return null
+    const out = await Promise.race([
+      outPromise,
+      new Promise<string>((resolve) => setTimeout(() => resolve(""), 1000)),
+    ])
+    // One regex, version adjacent to the marker: "runtime 9.9.9; Claude Code
+    // 2.0.0" must not pass off a foreign version as the CLI's.
+    return /(\d+\.\d+\.\d+)\s*\(claude code\)/i.exec(out)?.[1] ?? null
+  } catch {
+    return null
+  }
+}
+
 /** Check that the configured polisher can run (mode-aware). */
-function checkPolisher(config: Config): CheckResult {
+async function checkPolisher(config: Config): Promise<CheckResult> {
   const mode = config.polisher.mode
   if (mode === "rules") {
     // Fully offline: deterministic cleanup + scoring, no LLM, no keys.
@@ -92,13 +164,36 @@ function checkPolisher(config: Config): CheckResult {
   if (p === "claude_cli") {
     const bin = config.polisher.claude_cli.bin
     const path = which(bin)
-    if (path) return { name, status: "ok", detail: path }
-    return {
-      name,
-      status: "fail",
-      detail: `'${bin}' not on PATH`,
-      hint: 'install the Claude CLI, set [polisher].provider to anthropic/openai_compat, or use mode = "rules" (offline)',
+    if (!path) {
+      return {
+        name,
+        status: "fail",
+        detail: `'${bin}' not on PATH`,
+        hint: 'install the Claude CLI, set [polisher].provider to anthropic/openai_compat, or use mode = "rules" (offline)',
+      }
     }
+    // The safety flags the polisher passes require a recent CLI — an old one
+    // would pass a bare presence check here and then fail at polish time.
+    // Fail closed: a binary whose version can't be determined (wrong tool,
+    // crash, timeout) would not survive a real polish call either.
+    const version = await claudeCliVersion(bin)
+    if (!version) {
+      return {
+        name,
+        status: "fail",
+        detail: `${path} — could not determine the Claude CLI version`,
+        hint: `'${bin} --version' must print a version; is this really the Claude CLI?`,
+      }
+    }
+    if (!versionAtLeast(version, CLAUDE_CLI_MIN_VERSION)) {
+      return {
+        name,
+        status: "fail",
+        detail: `${path} (v${version})`,
+        hint: `dictum needs Claude Code >= ${CLAUDE_CLI_MIN_VERSION} (--safe-mode); update the CLI`,
+      }
+    }
+    return { name, status: "ok", detail: `${path} (v${version})` }
   }
   if (p === "anthropic") {
     const ok = config.polisher.anthropic.apiKey.length > 0
@@ -123,26 +218,33 @@ function checkPolisher(config: Config): CheckResult {
 }
 
 /** Detect the clipboard mechanism for the current environment (shared with the sink). */
-function checkClipboard(env: NodeJS.ProcessEnv): CheckResult {
-  const mech = detectClipboard(env)
+function checkClipboard(env: NodeJS.ProcessEnv, hasTty?: boolean): CheckResult {
+  const mech = hasTty === undefined ? detectClipboard(env) : detectClipboard(env, undefined, hasTty)
   if (mech.kind === "none") {
     return {
       name: "clipboard",
       status: "warn",
       detail: mech.label,
-      hint: "install xclip/wl-clipboard, or use --stdout (over SSH, OSC52 is used automatically)",
+      hint: "use --stdout, or install xclip/wl-clipboard; OSC52 needs an interactive SSH terminal",
     }
   }
   return { name: "clipboard", status: "ok", detail: mech.label }
 }
 
-/** Run all diagnostic checks. */
+/** Run all diagnostic checks. `hasTty` is injectable so tests don't depend on the runner's terminal. */
 export async function runDoctorChecks(
   config: Config,
   env: NodeJS.ProcessEnv = process.env,
+  hasTty?: boolean,
 ): Promise<CheckResult[]> {
-  const [stt] = await Promise.all([checkStt(config)])
-  return [checkMicrophone(), stt, checkPolisher(config), checkClipboard(env)]
+  const [stt, polisher] = await Promise.all([checkStt(config), checkPolisher(config)])
+  return [
+    checkMicrophone(),
+    ffmpegCheck(which("ffmpeg")),
+    stt,
+    polisher,
+    checkClipboard(env, hasTty),
+  ]
 }
 
 /** Render the checks as an aligned, human-readable table. */

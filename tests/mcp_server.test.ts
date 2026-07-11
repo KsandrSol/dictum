@@ -8,6 +8,8 @@ import {
   handleBuildSpec,
   handlePolishBrief,
   handlePolishPrompt,
+  track,
+  waitForIdle,
 } from "../src/mcp/server.ts"
 
 /** Deterministic stub polisher; echoes the mode + text, or throws on demand. */
@@ -55,6 +57,17 @@ describe("handlePolishPrompt (direct)", () => {
     expect(r.isError).toBe(true)
     expect(firstText(r)).toContain("Polishing failed")
     expect(firstText(r)).toContain("provider unreachable")
+  })
+
+  test("mode outside the advertised list → error, polisher never called", async () => {
+    // fail:true — proves the polisher is not reached for a rejected mode.
+    const r = await handlePolishPrompt(
+      { text: "x", mode: "../../etc/passwd" },
+      stubDeps({ fail: true }),
+    )
+    expect(r.isError).toBe(true)
+    expect(firstText(r)).toContain("unknown mode")
+    expect(firstText(r)).toContain("agent-prompt")
   })
 })
 
@@ -119,6 +132,24 @@ describe("handlePolishBrief (direct)", () => {
     const r = handlePolishBrief({ text: "  " })
     expect(r.isError).toBe(true)
     expect(firstText(r)).toContain("non-empty")
+  })
+
+  test("explicit provider argument wins over the detected family", () => {
+    const r = handlePolishBrief({ text: "поправь баг", provider: "openai" }, "anthropic")
+    expect(firstText(r)).toContain("run on an OpenAI")
+  })
+
+  test("detected family is used when provider is omitted", () => {
+    const r = handlePolishBrief({ text: "поправь баг" }, "anthropic")
+    expect(firstText(r)).toContain("run on an Anthropic")
+    const generic = handlePolishBrief({ text: "поправь баг" })
+    expect(firstText(generic)).not.toContain("Model-specific tips")
+  })
+
+  test("unknown provider → readable error listing families", () => {
+    const r = handlePolishBrief({ text: "x", provider: "mistral" })
+    expect(r.isError).toBe(true)
+    expect(firstText(r)).toContain("anthropic, openai, generic")
   })
 })
 
@@ -322,5 +353,96 @@ describe("MCP host-brain prompts (in-memory client)", () => {
     await expect(client.getPrompt({ name: "nope", arguments: {} })).rejects.toThrow(/not found/)
 
     await close()
+  })
+})
+
+describe("provider detection over the protocol (clientInfo.name)", () => {
+  async function connectAs(name: string) {
+    const server = createMcpServer(stubDeps())
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    const client = new Client({ name, version: "0.0.0" })
+    await Promise.all([server.connect(st), client.connect(ct)])
+    return {
+      client,
+      close: async () => {
+        await client.close()
+        await server.close()
+      },
+    }
+  }
+
+  test("a codex client gets OpenAI tips in prompts and polish_brief", async () => {
+    const { client, close } = await connectAs("codex-mcp-client")
+
+    const prompt = await client.getPrompt({ name: "polish", arguments: { draft: "поправь баг" } })
+    const msg = prompt.messages[0]
+    if (msg?.content.type !== "text") throw new Error("expected text content")
+    expect(msg.content.text).toContain("run on an OpenAI")
+
+    const brief = await client.callTool({
+      name: "polish_brief",
+      arguments: { text: "поправь баг" },
+    })
+    expect(firstText(brief)).toContain("run on an OpenAI")
+
+    await close()
+  })
+
+  test("a claude client gets Anthropic tips", async () => {
+    const { client, close } = await connectAs("claude-code")
+
+    const brief = await client.callTool({
+      name: "polish_brief",
+      arguments: { text: "поправь баг" },
+    })
+    expect(firstText(brief)).toContain("run on an Anthropic")
+
+    await close()
+  })
+
+  test("an unknown client stays generic (no tips block)", async () => {
+    const { client, close } = await connectAs("cursor")
+
+    const brief = await client.callTool({
+      name: "polish_brief",
+      arguments: { text: "поправь баг" },
+    })
+    expect(firstText(brief)).not.toContain("Model-specific tips")
+
+    await close()
+  })
+})
+
+describe("in-flight tracking (EOF drain)", () => {
+  test("waitForIdle waits for a slow tracked handler to finish", async () => {
+    let finished = false
+    const slow = track(async () => {
+      await new Promise((r) => setTimeout(r, 150))
+      finished = true
+      return "done"
+    })
+    const pending = slow()
+    const t0 = performance.now()
+    await waitForIdle(5000)
+    expect(finished).toBe(true) // idle only after the handler completed
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(100)
+    expect(await pending).toBe("done")
+  })
+
+  test("waitForIdle returns immediately when nothing is in flight", async () => {
+    const t0 = performance.now()
+    await waitForIdle(5000)
+    expect(performance.now() - t0).toBeLessThan(50)
+  })
+
+  test("track releases the counter on handler failure too", async () => {
+    const failing = track(async () => {
+      await new Promise((r) => setTimeout(r, 50))
+      throw new Error("boom")
+    })
+    await expect(failing()).rejects.toThrow("boom")
+    const t0 = performance.now()
+    await waitForIdle(5000)
+    expect(performance.now() - t0).toBeLessThan(50) // counter drained despite the throw
   })
 })

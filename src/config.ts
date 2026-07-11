@@ -17,13 +17,14 @@ export type SttProviderName = "local_http" | "openai_compat"
 export type PolisherName = "claude_cli" | "anthropic" | "openai_compat"
 export type PolisherMode = "llm" | "rules" | "layered"
 export type SinkName = "clipboard" | "stdout"
-export type RecorderName = "sox" | "arecord" | "ffmpeg" | "file"
+// Live capture is sox (`rec`); the file recorder is chosen automatically by
+// --input. There is deliberately no `backend` config field: cli.ts never read
+// it, so it only promised a choice that did not exist. Reintroduce together
+// with a recorder factory that actually honors it.
 export type StopMode = "enter" | "vad" | "ptt"
 
 export type Config = {
   recorder: {
-    /** Capture backend. "file" is selected automatically when --input is used. */
-    backend: RecorderName
     /** How recording stops: Enter key, silence auto-stop (VAD), or push-to-talk. */
     stopMode: StopMode
     /** Stop recording after this many seconds of trailing silence (VAD). */
@@ -91,7 +92,6 @@ export type Config = {
 
 export const DEFAULT_CONFIG: Config = {
   recorder: {
-    backend: "sox",
     stopMode: "enter",
     silenceTimeout: 2.0,
     energyThreshold: 0.015,

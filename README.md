@@ -21,13 +21,25 @@ $ dictum
 
 ## Quick start
 
+> **Pre-release note:** the first public release (GitHub + npm) is not published
+> yet — until then, install from source below. The installer and npm commands
+> go live with v0.1.
+
+From source (works today; needs [Bun](https://bun.sh) ≥ 1.2):
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/ksandrbn/dictum/main/install.sh | bash
-dictum doctor      # check mic / STT / polisher / clipboard
-dictum             # speak, then press Enter → polished prompt on your clipboard
+git clone https://github.com/KsandrSol/dictum && cd dictum
+bun install --frozen-lockfile
+bun run src/cli.ts doctor   # check mic / STT / polisher / clipboard
+bun run src/cli.ts          # speak, then press Enter → polished prompt on your clipboard
 ```
 
-Or with [Bun](https://bun.sh): `npm i -g dictum-cli` (then `dictum`), or one-off `bunx dictum-cli`.
+Once released — prebuilt binary or npm:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/KsandrSol/dictum/main/install.sh | bash
+# or, with Bun: npm i -g dictum-cli (then `dictum`), or one-off `bunx dictum-cli`
+```
 
 ## Why
 
@@ -40,7 +52,7 @@ Or with [Bun](https://bun.sh): `npm i -g dictum-cli` (then `dictum`), or one-off
 - **Provider-agnostic & self-hosted.** Local STT (GigaAM/Whisper) + your choice
   of polisher (Claude CLI by subscription, Anthropic API, or any OpenAI-compatible
   endpoint). No vendor lock-in, no required cloud account.
-- **Works everywhere you work.** Over SSH it copies to your *local* clipboard via
+- **SSH- and pipe-friendly.** Over SSH it copies to your *local* clipboard via
   OSC52; in a pipe it streams to stdout: `dictum --stdout | claude`.
 - **Orthogonal & hackable.** record → transcribe → polish → emit, each stage a
   swappable module behind one tiny contract.
@@ -213,6 +225,9 @@ target = "clipboard"      # clipboard | stdout
 
 Custom templates: drop `~/.config/dictum/templates/<name>.md` (frontmatter
 `description` / `language` + instruction body) to override or add modes.
+The file stem `<name>` is the mode ID — a portable ASCII slug (letters,
+digits, `_`, `.`, `-`; e.g. `ru-contract-review.md`); the description and
+body can be in any language. Files with other names are ignored.
 
 Useful env vars: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DICTUM_POLISHER`,
 `DICTUM_POLISHER_MODE`, `DICTUM_SCORE_THRESHOLD`, `DICTUM_SINK`,
@@ -220,14 +235,28 @@ Useful env vars: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DICTUM_POLISHER`,
 
 ## Requirements
 
-- A polisher: the [Claude CLI](https://claude.com/claude-code) (default, uses your
-  subscription) **or** an `ANTHROPIC_API_KEY` / OpenAI-compatible key.
+- A polisher: the [Claude CLI](https://claude.com/claude-code) ≥ 2.1.169
+  (default, uses your subscription; dictum runs it with project customizations
+  disabled and all tools denied) **or** an `ANTHROPIC_API_KEY` /
+  OpenAI-compatible key.
 - An STT backend: a local GigaAM/Whisper HTTP server, or an OpenAI-compatible key.
 - For live recording: [`sox`](http://sox.sourceforge.net/) (`apt install sox` /
   `brew install sox`). Not needed for `--input`.
-- Clipboard: native (`pbcopy`/`wl-copy`/`xclip`) or, over SSH, OSC52 automatically.
+- For `--input` with non-canonical WAV (not PCM16/16k/mono): `ffmpeg` to
+  transcode. Canonical WAV plays without it.
+- Clipboard: native (`pbcopy`/`wl-copy`/`xclip`) or, over SSH with an
+  interactive terminal, OSC52 automatically (headless: use `--stdout`).
 
 `dictum doctor` checks all of the above and tells you exactly what's missing.
+
+## Supported platforms (v0.1)
+
+| Platform | Status |
+|---|---|
+| Linux glibc x64 (modern CPUs) | **Supported** — primary development and test platform |
+| Linux arm64, macOS 13+ (x64/arm64) | **Implemented, unverified** — cross-compiled binaries; promoted after native smoke |
+| WSL / SSH / headless | Text flows via `--stdout` everywhere; clipboard via OSC52 needs an interactive terminal over SSH |
+| Windows (native) | **Experimental, unverified** — text mode and the MCP server should run under Bun; microphone and clipboard flows are not implemented |
 
 ## Development
 

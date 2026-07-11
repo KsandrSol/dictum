@@ -35,9 +35,13 @@ import { availableTemplateNames, resolveTemplate } from "../polisher/templates.t
 import {
   HOST_PROMPT_KINDS,
   HOST_PROMPT_META,
+  PROVIDER_FAMILIES,
+  type ProviderFamily,
   buildHostBrief,
   buildHostPrompt,
+  detectProviderFamily,
   isHostPromptKind,
+  isProviderFamily,
 } from "./prompts.ts"
 
 /** Refines `text` with the given template `mode`; resolves to the polished text. */
@@ -55,6 +59,35 @@ function textResult(text: string, isError = false): CallToolResult {
   return { content: [{ type: "text", text }], isError }
 }
 
+// ── In-flight request tracking ──────────────────────────────────────────────
+// stdin EOF must not kill responses still being computed (an async tool like
+// polish_prompt awaits a subprocess). Handlers are wrapped in track(); the
+// EOF path awaits waitForIdle() before letting the process exit.
+
+let inflight = 0
+
+/** Wrap a handler so the in-flight counter reflects it. */
+export function track<A extends unknown[], R>(
+  fn: (...args: A) => R | Promise<R>,
+): (...args: A) => Promise<R> {
+  return async (...args: A): Promise<R> => {
+    inflight++
+    try {
+      return await fn(...args)
+    } finally {
+      inflight--
+    }
+  }
+}
+
+/** Resolve once no request is in flight (or the drain timeout elapses). */
+export async function waitForIdle(timeoutMs = 15000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (inflight > 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25))
+  }
+}
+
 /**
  * Core polish_prompt logic, decoupled from the transport for direct testing.
  * Validates input and maps provider failures to a human-readable error result
@@ -69,6 +102,11 @@ export async function handlePolishPrompt(
     return textResult("Error: 'text' must be a non-empty string.", true)
   }
   const mode = typeof args.mode === "string" && args.mode.length > 0 ? args.mode : undefined
+  // Defense in depth on top of resolveTemplate's name validation: MCP callers
+  // may only pick from the advertised template list.
+  if (mode !== undefined && !deps.modes.includes(mode)) {
+    return textResult(`Error: unknown mode '${mode}'. Valid: ${deps.modes.join(", ")}.`, true)
+  }
   try {
     const polished = await deps.polish(text, mode)
     return textResult(polished)
@@ -104,7 +142,10 @@ export async function handleBuildSpec(
  * without MCP Prompts (Codex CLI) still get the flagship flow — the HOST model
  * executes the brief with its own session context. Offline, no LLM call.
  */
-export function handlePolishBrief(args: { text?: unknown; mode?: unknown }): CallToolResult {
+export function handlePolishBrief(
+  args: { text?: unknown; mode?: unknown; provider?: unknown },
+  detected: ProviderFamily = "generic",
+): CallToolResult {
   const text = typeof args.text === "string" ? args.text.trim() : ""
   if (!text) {
     return textResult("Error: 'text' must be a non-empty string.", true)
@@ -116,7 +157,15 @@ export function handlePolishBrief(args: { text?: unknown; mode?: unknown }): Cal
       true,
     )
   }
-  return textResult(buildHostBrief(mode, text))
+  const provider =
+    typeof args.provider === "string" && args.provider.length > 0 ? args.provider : detected
+  if (!isProviderFamily(provider)) {
+    return textResult(
+      `Error: unknown provider '${provider}'. Valid: ${PROVIDER_FAMILIES.join(", ")}.`,
+      true,
+    )
+  }
+  return textResult(buildHostBrief(mode, text, provider))
 }
 
 /**
@@ -142,6 +191,11 @@ export function createMcpServer(deps: McpDeps): McpServer {
   const modeList = deps.modes.join(", ")
   const modeHelp = `Polishing template (one of: ${modeList}). Defaults to the configured template.`
 
+  // Model family of the connected host (known after `initialize`), so briefs
+  // can carry that vendor's own prompting advice — the polished prompt will
+  // be executed by the very model the client runs on.
+  const clientFamily = () => detectProviderFamily(server.server.getClientVersion()?.name)
+
   // Host-brain prompts: the host model executes the brief with its own
   // context. Surfaced as e.g. /mcp__dictum__polish in Claude Code.
   for (const kind of HOST_PROMPT_KINDS) {
@@ -157,7 +211,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
             .describe("The rough draft to refine. If omitted, the host asks the user for it."),
         },
       },
-      ({ draft }) => buildHostPrompt(kind, draft ?? ""),
+      ({ draft }) => buildHostPrompt(kind, draft ?? "", clientFamily()),
     )
   }
 
@@ -172,7 +226,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
       throw new McpError(ErrorCode.InvalidParams, `Prompt ${name} not found`)
     }
     const draft = request.params.arguments?.draft
-    return buildHostPrompt(name, typeof draft === "string" ? draft : "")
+    return buildHostPrompt(name, typeof draft === "string" ? draft : "", clientFamily())
   })
 
   server.registerTool(
@@ -184,9 +238,15 @@ export function createMcpServer(deps: McpDeps): McpServer {
       inputSchema: {
         text: z.string().describe("The rough draft to build the brief for."),
         mode: z.string().optional().describe("Brief kind: polish (default), spec, or decompose."),
+        provider: z
+          .string()
+          .optional()
+          .describe(
+            "Model family for vendor prompting tips: anthropic, openai, or generic. Auto-detected from the connected client when omitted.",
+          ),
       },
     },
-    (args) => handlePolishBrief(args),
+    track((args) => handlePolishBrief(args, clientFamily())),
   )
 
   server.registerTool(
@@ -199,7 +259,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         mode: z.string().optional().describe(modeHelp),
       },
     },
-    (args) => handlePolishPrompt(args, deps),
+    track((args) => handlePolishPrompt(args, deps)),
   )
 
   server.registerTool(
@@ -212,7 +272,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         text: z.string().describe("The prompt draft to analyze."),
       },
     },
-    (args) => handleAnalyzePrompt(args),
+    track((args) => handleAnalyzePrompt(args)),
   )
 
   server.registerTool(
@@ -225,7 +285,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
         text: z.string().describe("The rough task description to expand into a spec."),
       },
     },
-    (args) => handleBuildSpec(args, deps),
+    track((args) => handleBuildSpec(args, deps)),
   )
 
   return server
@@ -247,6 +307,15 @@ export async function startMcpServer(): Promise<void> {
   await new Promise<void>((resolve) => {
     const done = () => resolve()
     transport.onclose = done
+    // The SDK transport does not surface stdin EOF as onclose — watch the
+    // stream directly so `printf … | dictum mcp` exits when the pipe closes.
+    // Drain in-flight requests first: killing a response mid-computation
+    // would return exit 0 with no output.
+    const drainThenDone = () => {
+      waitForIdle().then(done)
+    }
+    process.stdin.once("end", drainThenDone)
+    process.stdin.once("close", drainThenDone)
     process.once("SIGINT", done)
     process.once("SIGTERM", done)
   })

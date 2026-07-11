@@ -5,7 +5,7 @@ description: How to run, test, and verify Dictum (voice-to-prompt CLI) in this r
 
 # Running Dictum
 
-Requires [Bun](https://bun.sh) ≥ 1.1 on PATH.
+Requires [Bun](https://bun.sh) ≥ 1.2 on PATH (1.1 breaks the embedded template text imports).
 
 ## Run
 

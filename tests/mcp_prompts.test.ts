@@ -4,6 +4,7 @@ import {
   HOST_PROMPT_META,
   buildHostBrief,
   buildHostPrompt,
+  detectProviderFamily,
   isHostPromptKind,
 } from "../src/mcp/prompts.ts"
 import { analyzePrompt } from "../src/polisher/rules.ts"
@@ -135,6 +136,51 @@ describe("buildHostBrief — kind-specific canon", () => {
       expect(brief).toContain(`Show the ${HOST_PROMPT_META[kind].deliverable} in a fenced block`)
       expect(brief).toContain(`1. Act on the ${HOST_PROMPT_META[kind].deliverable}`)
     }
+  })
+})
+
+describe("provider-aware tips", () => {
+  test("generic (default) brief carries no vendor tips", () => {
+    expect(buildHostBrief("polish", MESSY)).not.toContain("Model-specific tips")
+    expect(buildHostBrief("polish", MESSY, "generic")).not.toContain("Model-specific tips")
+  })
+
+  test("anthropic family appends Claude prompting advice after the rules", () => {
+    const brief = buildHostBrief("polish", MESSY, "anthropic")
+    expect(brief).toContain("Model-specific tips (the polished prompt will run on an Anthropic")
+    expect(brief).toContain("XML-style tags")
+    expect(brief.indexOf("Rewriting rules:")).toBeLessThan(brief.indexOf("Model-specific tips"))
+    expect(brief.indexOf("Model-specific tips")).toBeLessThan(brief.indexOf("Then respond"))
+  })
+
+  test("openai family appends OpenAI prompting advice", () => {
+    const brief = buildHostBrief("polish", MESSY, "openai")
+    expect(brief).toContain("Model-specific tips (the polished prompt will run on an OpenAI")
+    expect(brief).toContain("state every constraint explicitly")
+    expect(brief).not.toContain("Anthropic")
+  })
+
+  test("detectProviderFamily maps client names to families", () => {
+    expect(detectProviderFamily("claude-code")).toBe("anthropic")
+    expect(detectProviderFamily("Claude Desktop")).toBe("anthropic")
+    expect(detectProviderFamily("codex")).toBe("openai")
+    expect(detectProviderFamily("codex-mcp-client")).toBe("openai")
+    expect(detectProviderFamily("openai-agent")).toBe("openai")
+    expect(detectProviderFamily("cursor")).toBe("generic")
+    expect(detectProviderFamily("windsurf")).toBe("generic")
+    expect(detectProviderFamily(undefined)).toBe("generic")
+    expect(detectProviderFamily("")).toBe("generic")
+  })
+
+  test("buildHostPrompt passes the family through to the brief", () => {
+    const res = buildHostPrompt("polish", MESSY, "openai")
+    const msg = res.messages[0]
+    if (msg?.content.type !== "text") throw new Error("expected text content")
+    expect(msg.content.text).toContain("run on an OpenAI")
+  })
+
+  test("the ask-user brief (empty draft) stays tip-free for any family", () => {
+    expect(buildHostBrief("polish", "", "openai")).not.toContain("Model-specific tips")
   })
 })
 
