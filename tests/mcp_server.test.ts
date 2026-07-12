@@ -486,4 +486,26 @@ describe("wire-level request tracking (Bun 1.2 EOF race)", () => {
     expect(performance.now() - t0).toBeGreaterThanOrEqual(100)
     expect(sent).toHaveLength(1) // the response still reached the client
   })
+
+  test("a reply settles only after send() actually resolves", async () => {
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => {
+      release = r
+    })
+    const fake = {
+      onmessage: (_m: unknown) => {},
+      send: (_m: unknown) => gate, // send that stays in flight until released
+      start: async () => {},
+      close: async () => {},
+    }
+    instrumentWireTracking(fake as unknown as Parameters<typeof instrumentWireTracking>[0])
+
+    fake.onmessage({ jsonrpc: "2.0", id: 94, method: "tools/call", params: {} })
+    const sending = fake.send({ jsonrpc: "2.0", id: 94, result: {} })
+    setTimeout(release, 150) // the write completes only now
+    const t0 = performance.now()
+    await waitForIdle(5000)
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(100) // held until send resolved
+    await sending
+  })
 })

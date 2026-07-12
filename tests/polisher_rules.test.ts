@@ -150,3 +150,21 @@ describe("normalizeText", () => {
     expect(normalizeText("   ")).toBe("")
   })
 })
+
+describe("pathological input (regex complexity)", () => {
+  test("a single 100 KB unbroken token is scored in bounded time", () => {
+    // Unbounded greedy classes in FILE_PATH/CODE_IDENT backtracked
+    // quadratically here (~21 s); the bounded quantifiers keep it linear.
+    const t0 = performance.now()
+    const result = analyzePrompt("a".repeat(100_000))
+    expect(performance.now() - t0).toBeLessThan(2000)
+    expect(result.score).toBeGreaterThanOrEqual(0) // still a valid analysis
+  })
+
+  test("bounded quantifiers still catch real paths and identifiers", () => {
+    const r = analyzePrompt(
+      "Fix parseConfig in src/polisher/rules.ts and rename stt_factory --dry-run",
+    )
+    expect(r.dimensions.specificity).toBeGreaterThan(0) // path + idents counted
+  })
+})

@@ -83,9 +83,15 @@ const DUP_WORD = /(?<![\p{L}\p{N}])([\p{L}\p{N}]+)(?:\s+\1)+(?![\p{L}\p{N}])/giu
 
 // ── Concreteness signals ────────────────────────────────────────────────────
 
-const FILE_PATH = /[\w./\\-]+\.(?:ts|tsx|js|jsx|py|rs|go|md|json|toml|yaml|yml|css|html|wav|sh)\b/gi
+// Quantifiers are bounded: unbounded greedy classes backtrack quadratically
+// on a single long token (a 100 KB unbroken token took ~21 s through
+// analyzePrompt), and MCP tools feed this arbitrary text. Real paths and
+// identifiers fit comfortably within the bounds.
+const FILE_PATH =
+  /[\w./\\-]{1,256}\.(?:ts|tsx|js|jsx|py|rs|go|md|json|toml|yaml|yml|css|html|wav|sh)\b/gi
 const NUMBER = /(?<![\p{L}])\d+(?:[.,]\d+)?(?![\p{L}])/gu
-const CODE_IDENT = /(?:[a-z0-9]+_[a-z0-9_]+|[a-z]+[A-Z][A-Za-z]*|--[a-z][\w-]+)/g
+const CODE_IDENT =
+  /(?:[a-z0-9]{1,64}_[a-z0-9_]{1,64}|[a-z]{1,64}[A-Z][A-Za-z]{0,63}|--[a-z][\w-]+)/g
 const QUOTED = /(?:"[^"\n]{2,}"|'[^'\n]{2,}'|`[^`\n]+`|«[^»\n]{2,}»)/g
 const URL = /https?:\/\/\S+/gi
 

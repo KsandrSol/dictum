@@ -114,10 +114,10 @@ export function instrumentWireTracking(transport: Transport): void {
     dispatch?.(message, extra)
   }
   const sendRaw = transport.send.bind(transport)
-  transport.send = (message, options) => {
-    noteWireReply(message)
-    return sendRaw(message, options)
-  }
+  // Settle only after send() resolves — the EOF drain must not count a
+  // response as delivered while its bytes are still queued for stdout.
+  transport.send = (message, options) =>
+    sendRaw(message, options).finally(() => noteWireReply(message))
 }
 
 /** Resolve once no request is in flight or awaiting dispatch (or the drain timeout elapses). */

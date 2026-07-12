@@ -18,28 +18,25 @@ $ dictum
 # → clipboard: "Write a Python function that reads a JSON file of users and
 #   returns only the active ones. Handle missing-file and invalid-JSON errors."
 ```
-> _Demo placeholder — an asciinema recording goes here in the first third of the README._
-
 ## Quick start
 
-> **Pre-release note:** the first public release (GitHub + npm) is not published
-> yet — until then, install from source below. The installer and npm commands
-> go live with v0.1.
+Prebuilt binary — linux/darwin, x64/arm64; the installer verifies the SHA-256
+checksum against the release's `SHA256SUMS` before installing:
 
-From source (works today; needs [Bun](https://bun.sh) ≥ 1.2):
+```sh
+curl -fsSL https://raw.githubusercontent.com/KsandrSol/dictum/main/install.sh | bash
+```
+
+Or from npm (needs [Bun](https://bun.sh) ≥ 1.2): `npm i -g dictum-cli`, then
+`dictum` — or one-off `bunx dictum-cli`.
+
+From source:
 
 ```sh
 git clone https://github.com/KsandrSol/dictum && cd dictum
 bun install --frozen-lockfile
 bun run src/cli.ts doctor   # check mic / STT / polisher / clipboard
 bun run src/cli.ts          # speak, then press Enter → polished prompt on your clipboard
-```
-
-Once released — prebuilt binary or npm:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/KsandrSol/dictum/main/install.sh | bash
-# or, with Bun: npm i -g dictum-cli (then `dictum`), or one-off `bunx dictum-cli`
 ```
 
 ## Why
