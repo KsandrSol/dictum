@@ -30,6 +30,20 @@ curl -fsSL https://raw.githubusercontent.com/KsandrSol/dictum/main/install.sh | 
 Or from npm (needs [Bun](https://bun.sh) ≥ 1.2): `npm i -g dictum-cli`, then
 `dictum` — or one-off `bunx dictum-cli`.
 
+When [Codex CLI](https://github.com/openai/codex) is installed, the release
+installer also registers the Dictum MCP server and adds a global `dictum:`
+shorthand (set `DICTUM_CODEX=0` to skip). Restart Codex afterwards, then write
+directly in the chat:
+
+```text
+dictum: fix the failing test
+dictum spec: add CSV export
+dictum decompose: migrate authentication to OAuth
+```
+
+Codex first calls Dictum, shows the proposed prompt, and waits for your reply —
+`1` (act), `2` (keep the original), or `3` (tweak) — before starting any work.
+
 From source:
 
 ```sh

@@ -1,6 +1,6 @@
 {
   "name": "dictum-cli",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Prompt-polishing CLI with an MCP host-brain overlay: type or dictate a rough thought, get a clear, structured prompt — in your clipboard or right inside your coding agent",
   "type": "module",
   "bin": {
