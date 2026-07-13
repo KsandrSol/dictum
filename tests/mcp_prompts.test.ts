@@ -44,12 +44,15 @@ describe("buildHostBrief — common envelope", () => {
     expect(brief).toContain("Do not start the work until they choose")
   })
 
-  test("offers the confirm step as a numbered 1/2/3 choice", () => {
+  test("offers the confirm step as a present_prompt review panel with a text fallback", () => {
     const brief = buildHostBrief("polish", MESSY)
+    expect(brief).toContain("present_prompt tool")
     expect(brief).toContain("1. Act on the polished prompt")
     expect(brief).toContain("2. Keep the original draft")
-    expect(brief).toContain("3. Tweak the wording further")
-    expect(brief).toContain("reply with 1, 2, or 3")
+    expect(brief).toContain("3. Generate another version")
+    expect(brief).toContain("4. Enter my corrections")
+    expect(brief).toContain("reply with 1, 2, 3, or 4") // fallback without native elicitation
+    expect(brief).toContain("before choice 1")
   })
 
   test("embeds the deterministic score and the analyzer's weak spots", () => {

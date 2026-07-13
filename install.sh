@@ -7,74 +7,57 @@
 #   DICTUM_REPO     owner/repo            (default: KsandrSol/dictum)
 #   DICTUM_VERSION  vX.Y.Z | latest       (default: latest)
 #   DICTUM_BIN_DIR  install directory     (default: ~/.local/bin)
-#   DICTUM_CODEX    0 to skip Codex setup (default: configure when Codex exists)
+#   DICTUM_CODEX    0 to skip Codex MCP + prefix-hook setup
+#                                         (default: configure when Codex exists)
 set -euo pipefail
 
 REPO="${DICTUM_REPO:-KsandrSol/dictum}"
 VERSION="${DICTUM_VERSION:-latest}"
 BIN_DIR="${DICTUM_BIN_DIR:-$HOME/.local/bin}"
-CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 
 err() {
   echo "install: $*" >&2
   exit 1
 }
 
-toml_string() {
-  # The installed binary path is normally simple, but quote it correctly if a
-  # user selected a directory with spaces, quotes, or backslashes.
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
-# Optional Codex CLI wiring: register the MCP server and a `dictum:` chat
-# shorthand. Runs only when ~/.codex already exists, announces every change,
-# is idempotent (marker-guarded), and DICTUM_CODEX=0 skips it entirely.
+# Optional Codex CLI wiring: register the MCP server through Codex's own CLI
+# and let the installed binary set up the deterministic `dictum:` prefix hook
+# plus the managed $dictum skill (which also removes the legacy v0.1.x
+# guidance block). Runs only when the codex CLI is present, announces every
+# change, and DICTUM_CODEX=0 skips it entirely.
 setup_codex() {
   [ "${DICTUM_CODEX:-1}" = "0" ] && return 0
-  [ -d "$CODEX_HOME" ] || return 0
+  command -v codex > /dev/null 2>&1 || return 0
 
-  local config="${CODEX_HOME}/config.toml"
-  local guidance="${CODEX_HOME}/AGENTS.md"
-  local begin="# >>> dictum-codex >>>"
-
-  if [ ! -f "$config" ] || ! grep -q '^\[mcp_servers\.dictum\]$' "$config"; then
-    {
-      printf '\n# Added by Dictum: host-brain prompt overlay.\n'
-      printf '[mcp_servers.dictum]\n'
-      printf 'command = "%s"\n' "$(toml_string "$BIN_DIR/dictum")"
-      printf 'args = ["mcp"]\n'
-    } >> "$config"
+  local existing compact expected
+  if existing="$(codex mcp get dictum --json 2>/dev/null)"; then
+    compact="$(printf '%s' "$existing" | tr -d '[:space:]')"
+    expected="$(printf '%s' "$BIN_DIR/dictum" | tr -d '[:space:]')"
+    if printf '%s\n' "$compact" | grep -Fq "\"command\":\"$expected\"" &&
+      printf '%s\n' "$compact" | grep -Fq '"args":["mcp"]' &&
+      printf '%s\n' "$compact" | grep -Fq '"enabled":true'; then
+      echo "install: Dictum MCP already points to the installed binary."
+    else
+      echo "install: warning: an existing Dictum MCP entry was left unchanged." >&2
+      echo "install: it does not exactly match enabled command $BIN_DIR/dictum with args [mcp]." >&2
+      echo "install: inspect it with: codex mcp get dictum" >&2
+      echo "install: to replace it, run: codex mcp remove dictum" >&2
+      echo "install: then run: codex mcp add dictum -- \"$BIN_DIR/dictum\" mcp" >&2
+    fi
+  elif codex mcp add dictum -- "$BIN_DIR/dictum" mcp; then
     echo "install: registered Dictum MCP for Codex."
   else
-    echo "install: Dictum MCP is already registered for Codex."
+    echo "install: warning: could not register Dictum MCP automatically." >&2
+    echo "install: run: codex mcp add dictum -- \"$BIN_DIR/dictum\" mcp" >&2
   fi
 
-  if [ ! -f "$guidance" ] || ! grep -Fq "$begin" "$guidance"; then
-    cat >> "$guidance" <<'EOF'
-
-# >>> dictum-codex >>>
-## Dictum shorthand
-
-If a user message begins with `dictum:`, `dictum spec:`, or
-`dictum decompose:`, it is an explicit Dictum request. Take the text after the
-prefix as the rough draft and, before doing any work or calling any other tool,
-call the Dictum MCP server's `polish_brief` tool. Use mode `polish` by default,
-or `spec`/`decompose` from the prefix. Follow the returned brief: show the
-proposed result and wait for the user's 1/2/3 choice. Do not execute the draft
-before they choose.
-
-Examples:
-- `dictum: fix the failing test`
-- `dictum spec: add CSV export`
-- `dictum decompose: migrate auth to OAuth`
-# <<< dictum-codex <<<
-EOF
-    echo "install: added the 'dictum:' shorthand to Codex guidance."
+  if "$BIN_DIR/dictum" codex setup --binary "$BIN_DIR/dictum"; then
+    echo "install: configured deterministic dictum: routing for Codex."
+    echo "install: start a new Codex session, open /hooks, and trust 'Routing Dictum prompt'."
   else
-    echo "install: Codex shorthand guidance is already present."
+    echo "install: warning: could not configure the Codex prefix hook." >&2
+    echo "install: run: dictum codex setup --binary \"$BIN_DIR/dictum\"" >&2
   fi
-
-  echo "install: restart Codex to load the MCP server and guidance."
 }
 
 # Detect OS

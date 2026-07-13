@@ -62,17 +62,21 @@ describe("canon sync: prompts.ts ↔ /dictum command", () => {
     expect(block(command)).toBe(block(brief))
   })
 
-  test("the numbered confirm choice is identical in both surfaces", () => {
+  test("both surfaces expose the same predefined choices and a corrections path", () => {
     const brief = buildHostBrief("polish", "some draft")
     const command = readFileSync(COMMAND_FILE, "utf8")
     for (const line of [
       "1. Act on the polished prompt",
       "2. Keep the original draft",
-      "3. Tweak the wording further",
-      "reply with 1, 2, or 3",
+      "3. Generate another version",
     ]) {
       expect(brief).toContain(line)
       expect(command).toContain(line)
     }
+    // The fourth action (user corrections) is the native panel field in the
+    // MCP brief and the structured-choice free-text path in the zero-install
+    // command — same action, host-appropriate surface.
+    expect(brief).toContain("4. Enter my corrections")
+    expect(command).toContain("free-text choice is the fourth action: enter my corrections")
   })
 })

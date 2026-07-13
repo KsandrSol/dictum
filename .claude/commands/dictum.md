@@ -31,7 +31,7 @@ Then respond exactly like this:
 3. Ask the user to choose the next step by number:
    1. Act on the polished prompt
    2. Keep the original draft
-   3. Tweak the wording further
-   Tell them to reply with 1, 2, or 3, or describe the tweak directly. Do not start the work until they choose.
+   3. Generate another version
+   Tell them to reply with 1, 2, or 3, or describe their corrections directly. Do not start the work until they choose.
 
-If a structured-choice tool (e.g. AskUserQuestion) is available in this session, present the same three options through it instead of the plain-text list — the user picks by number either way.
+If a structured-choice tool (e.g. AskUserQuestion) is available in this session, present the same three predefined options through it instead of the plain-text list. Its built-in free-text choice is the fourth action: enter my corrections.

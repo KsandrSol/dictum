@@ -1,6 +1,6 @@
 {
   "name": "dictum-cli",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Prompt-polishing CLI with an MCP host-brain overlay: type or dictate a rough thought, get a clear, structured prompt — in your clipboard or right inside your coding agent",
   "type": "module",
   "bin": {
@@ -16,7 +16,19 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write ."
   },
-  "keywords": ["voice", "stt", "prompt", "cli", "speech-to-text", "claude", "llm"],
+  "keywords": [
+    "prompt-engineering",
+    "mcp",
+    "codex",
+    "claude-code",
+    "voice",
+    "stt",
+    "prompt",
+    "cli",
+    "speech-to-text",
+    "claude",
+    "llm"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",

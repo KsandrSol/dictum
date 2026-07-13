@@ -8,6 +8,7 @@ import {
   handleBuildSpec,
   handlePolishBrief,
   handlePolishPrompt,
+  handlePresentPrompt,
   instrumentWireTracking,
   noteWireMessage,
   noteWireReply,
@@ -507,5 +508,118 @@ describe("wire-level request tracking (Bun 1.2 EOF race)", () => {
     await waitForIdle(5000)
     expect(performance.now() - t0).toBeGreaterThanOrEqual(100) // held until send resolved
     await sending
+  })
+})
+
+function decisionOf(result: unknown): string | undefined {
+  return (result as { structuredContent?: { decision?: string } }).structuredContent?.decision
+}
+
+describe("handlePresentPrompt (direct)", () => {
+  test("rejects missing original or proposal", async () => {
+    expect((await handlePresentPrompt({ proposed: "ready" })).isError).toBe(true)
+    expect((await handlePresentPrompt({ original: "draft" })).isError).toBe(true)
+  })
+
+  test("falls back to a numbered gate when native elicitation is unavailable", async () => {
+    const r = await handlePresentPrompt({ original: "draft", proposed: "polished" })
+    expect(decisionOf(r)).toBe("cancel")
+    expect(firstText(r)).toContain("1. Act")
+    expect(firstText(r)).toContain("3. Generate another version")
+    expect(firstText(r)).toContain("4. Enter my corrections")
+    expect(firstText(r)).toContain("Do not start work yet")
+  })
+
+  test("returns explicit approval only after the user accepts Act", async () => {
+    const r = await handlePresentPrompt(
+      { original: "draft", proposed: "polished" },
+      async (request) => {
+        expect(request.message).toContain("polished")
+        expect(request.requestedSchema.required).toEqual(["decision"])
+        expect(Object.keys(request.requestedSchema.properties)).toEqual(["decision"])
+        return { action: "accept", content: { decision: "act" } }
+      },
+    )
+    expect(decisionOf(r)).toBe("act")
+    expect(firstText(r)).toContain("explicitly approved")
+  })
+
+  test("Generate another version returns regenerate without a second form", async () => {
+    let call = 0
+    const r = await handlePresentPrompt({ original: "draft", proposed: "polished" }, async () => {
+      call += 1
+      return { action: "accept", content: { decision: "regenerate" } }
+    })
+    expect(call).toBe(1)
+    expect(decisionOf(r)).toBe("regenerate")
+    expect(firstText(r)).toContain("meaningfully different")
+    expect(firstText(r)).toContain("call present_prompt again")
+    expect(firstText(r)).toContain("without starting")
+  })
+
+  test("Enter my corrections opens a second required form and returns its text", async () => {
+    let call = 0
+    const r = await handlePresentPrompt(
+      { original: "draft", proposed: "polished" },
+      async (request) => {
+        call += 1
+        if (call === 1) {
+          expect(Object.keys(request.requestedSchema.properties)).toEqual(["decision"])
+          return { action: "accept", content: { decision: "tweak" } }
+        }
+        expect(request.requestedSchema.required).toEqual(["feedback"])
+        expect(Object.keys(request.requestedSchema.properties)).toEqual(["feedback"])
+        return {
+          action: "accept",
+          content: { feedback: "Добавь критерии приёмки" },
+        }
+      },
+    )
+    expect(call).toBe(2)
+    expect(decisionOf(r)).toBe("tweak")
+    expect(firstText(r)).toContain("Добавь критерии приёмки")
+    expect(firstText(r)).toContain("call present_prompt again")
+  })
+
+  test("dismissing the corrections field cancels without authorizing work", async () => {
+    let call = 0
+    const r = await handlePresentPrompt({ original: "draft", proposed: "polished" }, async () => {
+      call += 1
+      return call === 1
+        ? { action: "accept", content: { decision: "tweak" } }
+        : { action: "cancel" }
+    })
+    expect(decisionOf(r)).toBe("cancel")
+    expect(firstText(r)).toContain("Stop without starting")
+  })
+
+  test("a corrections-form failure requests chat feedback without fabricating it", async () => {
+    let call = 0
+    const r = await handlePresentPrompt({ original: "draft", proposed: "polished" }, async () => {
+      call += 1
+      if (call === 1) return { action: "accept", content: { decision: "tweak" } }
+      throw new Error("form renderer failed")
+    })
+    expect(call).toBe(2)
+    expect(decisionOf(r)).toBe("feedback_required")
+    expect((r.structuredContent as { feedback?: string }).feedback).toBeUndefined()
+    expect(firstText(r)).toContain("Ask the user in plain text")
+    expect(firstText(r)).toContain("Do not start")
+  })
+
+  test("Keep and a dismissed panel never authorize work", async () => {
+    const keep = await handlePresentPrompt(
+      { original: "draft", proposed: "polished" },
+      async () => ({ action: "accept", content: { decision: "keep" } }),
+    )
+    expect(decisionOf(keep)).toBe("keep")
+    expect(firstText(keep)).toContain("Do not start")
+
+    const dismissed = await handlePresentPrompt(
+      { original: "draft", proposed: "polished" },
+      async () => ({ action: "cancel" }),
+    )
+    expect(decisionOf(dismissed)).toBe("cancel")
+    expect(firstText(dismissed)).toContain("Stop without starting")
   })
 })

@@ -31,9 +31,11 @@ Or from npm (needs [Bun](https://bun.sh) ≥ 1.2): `npm i -g dictum-cli`, then
 `dictum` — or one-off `bunx dictum-cli`.
 
 When [Codex CLI](https://github.com/openai/codex) is installed, the release
-installer also registers the Dictum MCP server and adds a global `dictum:`
-shorthand (set `DICTUM_CODEX=0` to skip). Restart Codex afterwards, then write
-directly in the chat:
+installer also registers the Dictum MCP server and configures deterministic
+`dictum:` routing — a `UserPromptSubmit` prefix hook plus a managed `$dictum`
+skill (set `DICTUM_CODEX=0` to skip; `dictum codex setup --binary <path>` runs
+the same setup manually). Start a new Codex session, open `/hooks`, and trust
+“Routing Dictum prompt”. Then write directly in the chat:
 
 ```text
 dictum: fix the failing test
@@ -41,8 +43,9 @@ dictum spec: add CSV export
 dictum decompose: migrate authentication to OAuth
 ```
 
-Codex first calls Dictum, shows the proposed prompt, and waits for your reply —
-`1` (act), `2` (keep the original), or `3` (tweak) — before starting any work.
+Codex first calls Dictum, shows the proposal in a native review panel — Act,
+Keep original, Generate another version, or Enter my corrections — and starts
+the underlying work only after you choose Act.
 
 From source:
 

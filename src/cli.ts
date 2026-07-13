@@ -5,8 +5,16 @@
  * imports sibling modules.
  */
 
+import { homedir } from "node:os"
+import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import pkg from "../package.json" with { type: "json" }
+import { installCodexHook, runCodexHookFromStdin } from "./codex/hook.ts"
+import {
+  assertCodexSkillInstallable,
+  installCodexSkill,
+  removeLegacyCodexGuidance,
+} from "./codex/skill.ts"
 import { loadConfig, templatesDir } from "./config.ts"
 import { runPipeline } from "./core/pipeline.ts"
 import type { ChoiceContext, Recorder, Sink } from "./core/types.ts"
@@ -25,7 +33,14 @@ import { StatusReporter } from "./ui/status.ts"
 
 const VERSION: string = pkg.version
 
-export type CliCommand = "run" | "doctor" | "mcp" | "help" | "version"
+export type CliCommand =
+  | "run"
+  | "doctor"
+  | "mcp"
+  | "codex-hook"
+  | "codex-setup"
+  | "help"
+  | "version"
 
 export type OutputFormat = "text" | "json"
 
@@ -45,6 +60,8 @@ export type CliOptions = {
   mode: string | undefined
   /** Output format: plain polished text (default) or a JSON envelope. */
   format: OutputFormat
+  /** Absolute Dictum binary path used by `codex setup`. */
+  binary: string | undefined
   /** Unknown / error message produced while parsing, if any. */
   error: string | undefined
 }
@@ -55,6 +72,8 @@ Usage:
   dictum [options]            Record (or read --input/--text/stdin), polish, emit
   dictum doctor               Check microphone, STT, polisher and clipboard
   dictum mcp                  Run as an MCP server (host-brain prompts + tools) over stdio
+  dictum codex setup --binary <path>
+                              Install/update the Codex prefix hook and $dictum skill
   dictum --help               Show this help
   dictum --version            Show version
 
@@ -71,6 +90,7 @@ Options:
       --stdout                Print result to stdout instead of the clipboard
       --format <text|json>    Output format. json emits a stable envelope:
                               {v, original, polished, template, score, rationale}
+      --binary <path>         Dictum binary path for 'dictum codex setup'
   -h, --help                  Show help
   -v, --version               Show version
 
@@ -100,6 +120,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
     auto: false,
     mode: undefined,
     format: "text",
+    binary: undefined,
     error: undefined,
   }
 
@@ -120,6 +141,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
         auto: { type: "boolean" },
         stdout: { type: "boolean" },
         format: { type: "string" },
+        binary: { type: "string" },
       },
     })
   } catch (err) {
@@ -139,6 +161,10 @@ export function parseCliArgs(argv: string[]): CliOptions {
       command = "doctor"
     } else if (cmd === "mcp") {
       command = "mcp"
+    } else if (cmd === "codex-hook" && positionals.length === 1) {
+      command = "codex-hook"
+    } else if (cmd === "codex" && positionals.length === 2 && positionals[1] === "setup") {
+      command = "codex-setup"
     } else if (cmd === "run") {
       command = "run"
     } else {
@@ -168,7 +194,51 @@ export function parseCliArgs(argv: string[]): CliOptions {
     auto: values.auto === true,
     mode: str(values.mode) ?? str(values.template),
     format,
+    binary: str(values.binary),
     error: undefined,
+  }
+}
+
+/**
+ * Install the deterministic prefix hook and the explicit `$dictum` user skill,
+ * and drop the legacy v0.1.x guidance block whose plain-text 1/2/3 flow would
+ * conflict with the native four-choice review panel.
+ */
+async function runCodexSetup(binary: string | undefined): Promise<number> {
+  if (!binary?.trim()) {
+    process.stderr.write(
+      'dictum: codex setup requires --binary <path> (for example: --binary "$(command -v dictum)").\n',
+    )
+    return 2
+  }
+
+  const binaryPath = resolve(binary)
+  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex")
+  const hooksPath = join(codexHome, "hooks.json")
+  const skillDir = join(homedir(), ".agents", "skills", "dictum")
+
+  try {
+    // Preflight the independent skill target so a name collision cannot leave
+    // a newly-installed hook behind after setup reports failure.
+    await assertCodexSkillInstallable(skillDir)
+    const hook = await installCodexHook(hooksPath, binaryPath)
+    const skill = await installCodexSkill(skillDir)
+    const guidancePath = join(codexHome, "AGENTS.md")
+    const legacyRemoved = await removeLegacyCodexGuidance(guidancePath)
+    const hookState = hook.changed ? (hook.created ? "installed" : "updated") : "unchanged"
+    process.stdout.write(`Codex hook: ${hookState} (${hooksPath})\n`)
+    process.stdout.write(`Codex skill: ${skill} (${skillDir})\n`)
+    if (legacyRemoved) {
+      process.stdout.write(`Codex guidance: removed the legacy dictum block (${guidancePath})\n`)
+    }
+    process.stdout.write(
+      "Start a new Codex session, open /hooks, and trust 'Routing Dictum prompt'.\n",
+    )
+    return 0
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    process.stderr.write(`dictum: Codex setup failed: ${reason}\n`)
+    return 1
   }
 }
 
@@ -387,6 +457,11 @@ export async function main(argv: string[]): Promise<number> {
     case "mcp":
       await startMcpServer()
       return 0
+    case "codex-hook":
+      await runCodexHookFromStdin()
+      return 0
+    case "codex-setup":
+      return runCodexSetup(opts.binary)
     case "run":
       return runCommand(opts)
   }

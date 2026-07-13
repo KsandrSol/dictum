@@ -14,6 +14,8 @@
  * Tools:
  *   - polish_brief(text, mode?) — the same host-brain brief as a tool result,
  *                                 for hosts without MCP Prompts (Codex CLI)
+ *   - present_prompt(original, proposed) — native review/confirm/revise panel
+ *                                 via MCP elicitation (text fallback otherwise)
  *   - polish_prompt(text, mode?) — server-side polish with Dictum's own model
  *   - analyze_prompt(text)      — deterministic 0–100 score + weak spots (offline)
  *   - build_spec(text)          — server-side spec via the "spec" template
@@ -25,7 +27,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js"
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js"
+import type {
+  CallToolResult,
+  ElicitRequestFormParams,
+  ElicitResult,
+} from "@modelcontextprotocol/sdk/types.js"
 import { ErrorCode, GetPromptRequestSchema, McpError } from "@modelcontextprotocol/sdk/types.js"
 import { z } from "zod"
 import pkg from "../../package.json" with { type: "json" }
@@ -44,6 +50,15 @@ import {
   isHostPromptKind,
   isProviderFamily,
 } from "./prompts.ts"
+
+/**
+ * Codex reads MCP initialization instructions when deciding whether and how to
+ * use the server. Keep the explicit trigger and safety gate in the first 512
+ * characters so `dictum:` cannot be mistaken for permission to start work.
+ */
+export const DICTUM_MCP_INSTRUCTIONS = `Dictum is an input-agnostic prompt-engineering assistant and review gate. If a user message starts with "dictum:", "dictum spec:", or "dictum decompose:", do not execute it. Before inspecting the project or calling any other tool, call polish_brief with the text after the prefix and mode polish, spec, or decompose. Follow the returned brief: propose the rewritten prompt and wait for explicit confirmation. Never treat a Dictum-prefixed draft as a request to start work immediately.
+
+After writing the proposal, call present_prompt with the original draft and proposal. That tool opens the client's native confirmation UI when MCP elicitation is supported and otherwise returns a numbered fallback. Choice 1 authorizes the proposal. Choice 2 keeps the original and does not start work. Choice 3 requests a fresh alternative. Choice 4 opens a required corrections field. Revise or regenerate as requested, present the complete new proposal, and call present_prompt again.`
 
 /** Refines `text` with the given template `mode`; resolves to the polished text. */
 export type PolishFn = (text: string, mode?: string) => Promise<string>
@@ -208,6 +223,173 @@ export function handlePolishBrief(
   return textResult(buildHostBrief(mode, text, provider))
 }
 
+export type PromptDecision =
+  | "act"
+  | "keep"
+  | "regenerate"
+  | "tweak"
+  | "feedback_required"
+  | "cancel"
+
+export type PromptDecisionPayload = Record<string, unknown> & {
+  decision: PromptDecision
+  feedback?: string
+  original: string
+  proposed: string
+}
+
+type ElicitFn = (params: ElicitRequestFormParams) => Promise<ElicitResult>
+
+function decisionResult(payload: PromptDecisionPayload, instruction: string): CallToolResult {
+  return {
+    content: [{ type: "text", text: `${JSON.stringify(payload)}\n\n${instruction}` }],
+    structuredContent: payload,
+  }
+}
+
+/**
+ * Show a host-native review form after the host model has produced the prompt.
+ * The MCP server cannot create that proposal itself because only the host sees
+ * the session/repository context, hence this deliberately follows polish_brief
+ * as the second half of a two-tool handshake.
+ */
+export async function handlePresentPrompt(
+  args: { original?: unknown; proposed?: unknown },
+  elicit?: ElicitFn,
+): Promise<CallToolResult> {
+  const original = typeof args.original === "string" ? args.original.trim() : ""
+  const proposed = typeof args.proposed === "string" ? args.proposed.trim() : ""
+  if (!original) return textResult("Error: 'original' must be a non-empty string.", true)
+  if (!proposed) return textResult("Error: 'proposed' must be a non-empty string.", true)
+
+  if (!elicit) {
+    return decisionResult(
+      { decision: "cancel", original, proposed },
+      "Native confirmation is unavailable. Show the proposal, then ask the user in plain text: 1. Act on the polished prompt; 2. Keep the original draft and stop; 3. Generate another version; 4. Enter my corrections. They may type the requested corrections directly. Do not start work yet.",
+    )
+  }
+
+  let choiceResult: ElicitResult
+  try {
+    choiceResult = await elicit({
+      mode: "form",
+      message: `Review Dictum's proposed prompt before any work starts:\n\n${proposed}`,
+      requestedSchema: {
+        type: "object",
+        properties: {
+          decision: {
+            type: "string",
+            title: "Next step",
+            description: "Choose what Dictum should do with the proposed prompt.",
+            oneOf: [
+              { const: "act", title: "1. Act on polished prompt" },
+              { const: "keep", title: "2. Keep original and stop" },
+              { const: "regenerate", title: "3. Generate another version" },
+              { const: "tweak", title: "4. Enter my corrections…" },
+            ],
+          },
+        },
+        required: ["decision"],
+      },
+    })
+  } catch {
+    return decisionResult(
+      { decision: "cancel", original, proposed },
+      "The client could not open native confirmation. Show the same 1/2/3/4 choices as plain text and wait; do not start work.",
+    )
+  }
+
+  if (choiceResult.action !== "accept" || !choiceResult.content) {
+    return decisionResult(
+      { decision: "cancel", original, proposed },
+      "The user dismissed Dictum's confirmation. Stop without starting the underlying work.",
+    )
+  }
+
+  const rawDecision = choiceResult.content.decision
+  if (
+    rawDecision !== "act" &&
+    rawDecision !== "keep" &&
+    rawDecision !== "regenerate" &&
+    rawDecision !== "tweak"
+  ) {
+    return textResult(
+      "Error: the confirmation returned an unknown decision. Do not start the underlying work.",
+      true,
+    )
+  }
+
+  if (rawDecision === "act") {
+    return decisionResult(
+      { decision: "act", original, proposed },
+      "The user explicitly approved the proposed prompt. Act on it now.",
+    )
+  }
+  if (rawDecision === "keep") {
+    return decisionResult(
+      { decision: "keep", original, proposed },
+      "Discard the rewrite and preserve the original draft. Do not start the underlying work.",
+    )
+  }
+  if (rawDecision === "regenerate") {
+    return decisionResult(
+      { decision: "regenerate", original, proposed },
+      "Create a meaningfully different improved proposal without starting the underlying work. Show the complete new version, then call present_prompt again.",
+    )
+  }
+
+  // Codex submits the four-choice form cleanly. Put the corrections editor in
+  // a second, required form: an optional trailing text field currently traps
+  // the Codex TUI because an empty final field cannot submit.
+  let feedbackResult: ElicitResult
+  try {
+    feedbackResult = await elicit({
+      mode: "form",
+      message: "Enter what Dictum should add, remove, or correct in the proposed prompt:",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          feedback: {
+            type: "string",
+            title: "My corrections",
+            description: "Describe what to add, remove, or correct, then submit.",
+            minLength: 1,
+          },
+        },
+        required: ["feedback"],
+      },
+    })
+  } catch {
+    return decisionResult(
+      { decision: "feedback_required", original, proposed },
+      "The native corrections field could not open. Ask the user in plain text what to add, remove, or correct. Apply only the corrections they provide, show the complete revision, and call present_prompt again. Do not start the underlying work.",
+    )
+  }
+
+  if (feedbackResult.action !== "accept" || !feedbackResult.content) {
+    return decisionResult(
+      { decision: "cancel", original, proposed },
+      "The user dismissed Dictum's corrections field. Stop without starting the underlying work.",
+    )
+  }
+
+  const feedback =
+    typeof feedbackResult.content.feedback === "string"
+      ? feedbackResult.content.feedback.trim()
+      : ""
+  if (!feedback) {
+    return textResult(
+      "Error: corrections must be non-empty. Ask what should change and do not start the underlying work.",
+      true,
+    )
+  }
+
+  return decisionResult(
+    { decision: "tweak", feedback, original, proposed },
+    "Revise the proposal using the user's feedback, show the complete new version, then call present_prompt again. Do not start the underlying work.",
+  )
+}
+
 /**
  * Build a PolishFn from configuration. Constructs the polisher once and resolves
  * the template per call (so different `mode` values work). Reuses the exact same
@@ -227,7 +409,10 @@ export function polishFromConfig(config: Config): PolishFn {
  * / build_spec tools.
  */
 export function createMcpServer(deps: McpDeps): McpServer {
-  const server = new McpServer({ name: "dictum", version: pkg.version })
+  const server = new McpServer(
+    { name: "dictum", version: pkg.version },
+    { instructions: DICTUM_MCP_INSTRUCTIONS },
+  )
   const modeList = deps.modes.join(", ")
   const modeHelp = `Polishing template (one of: ${modeList}). Defaults to the configured template.`
 
@@ -274,7 +459,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Get a polishing brief (host-executed)",
       description:
-        "Return Dictum's rewriting brief for YOU to execute: canon rules plus a deterministic pre-analysis of the user's rough draft. Follow the brief yourself, using your session's project context — do not expect polished text back from this tool. Prefer this over polish_prompt when the user wants their draft refined and you have the context. Offline, no LLM call. Modes: polish (default), spec, decompose.",
+        "MANDATORY first step for messages beginning `dictum:`, `dictum spec:`, or `dictum decompose:`. Return Dictum's rewriting brief for YOU to execute using this session's context — do not start the underlying task and do not expect polished text back from this tool. After producing the complete proposal, call present_prompt and wait for the user's decision. Prefer this over polish_prompt when you have the context. Offline, no LLM call. Modes: polish (default), spec, decompose.",
       inputSchema: {
         text: z.string().describe("The rough draft to build the brief for."),
         mode: z.string().optional().describe("Brief kind: polish (default), spec, or decompose."),
@@ -287,6 +472,28 @@ export function createMcpServer(deps: McpDeps): McpServer {
       },
     },
     track((args) => handlePolishBrief(args, clientFamily())),
+  )
+
+  server.registerTool(
+    "present_prompt",
+    {
+      title: "Review and confirm a Dictum prompt",
+      description:
+        "MANDATORY second step after polish_brief. Present the complete rewritten prompt in the client's native review UI and wait for Act, Keep original, Generate another version, or Enter my corrections. The corrections choice opens a required free-text follow-up. Never call this before you have written the proposal, and never start the underlying task unless the result decision is `act`. If the result is `regenerate` or `tweak`, create the requested revision and call this tool again. If it is `feedback_required`, ask for corrections in chat first.",
+      inputSchema: {
+        original: z
+          .string()
+          .describe("The user's complete rough draft, without the Dictum prefix."),
+        proposed: z.string().describe("The complete polished prompt or spec to review."),
+      },
+    },
+    track((args) => {
+      const supportsForm = Boolean(server.server.getClientCapabilities()?.elicitation?.form)
+      const elicit = supportsForm
+        ? (params: ElicitRequestFormParams) => server.server.elicitInput(params)
+        : undefined
+      return handlePresentPrompt(args, elicit)
+    }),
   )
 
   server.registerTool(

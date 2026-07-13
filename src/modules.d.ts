@@ -5,3 +5,9 @@ declare module "*.md" {
   const content: string
   export default content
 }
+
+// Codex skill metadata imported as text (agents/openai.yaml).
+declare module "*.yaml" {
+  const content: string
+  export default content
+}
