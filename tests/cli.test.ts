@@ -28,6 +28,29 @@ describe("parseCliArgs", () => {
     expect(o.error).toBeUndefined()
   })
 
+  test("integrate selects every supported host and carries setup options", () => {
+    for (const host of ["claude", "codex", "cursor", "devin"] as const) {
+      const parsed = parseCliArgs(["integrate", host, "--binary", "./dictum", "--project"])
+      expect(parsed.command).toBe("integrate")
+      expect(parsed.host).toBe(host)
+      expect(parsed.binary).toBe("./dictum")
+      expect(parsed.project).toBe(true)
+    }
+  })
+
+  test("codex setup and codex-hook remain aliases", () => {
+    expect(parseCliArgs(["codex", "setup"]).host).toBe("codex")
+    expect(parseCliArgs(["codex", "setup"]).command).toBe("integrate")
+    expect(parseCliArgs(["codex-hook"]).command).toBe("prompt-hook")
+    expect(parseCliArgs(["prompt-hook"]).command).toBe("prompt-hook")
+  })
+
+  test("integrate rejects an unknown host", () => {
+    expect(parseCliArgs(["integrate", "windsurf"]).error).toContain(
+      "Valid: claude, codex, cursor, devin",
+    )
+  })
+
   test("--input with -i alias", () => {
     expect(parseCliArgs(["--input", "a.wav"]).input).toBe("a.wav")
     expect(parseCliArgs(["-i", "b.wav"]).input).toBe("b.wav")

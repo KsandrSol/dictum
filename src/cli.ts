@@ -5,20 +5,27 @@
  * imports sibling modules.
  */
 
+import { access, constants as fsConstants } from "node:fs/promises"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { basename, join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 import pkg from "../package.json" with { type: "json" }
-import { installCodexHook, runCodexHookFromStdin } from "./codex/hook.ts"
-import {
-  assertCodexSkillInstallable,
-  installCodexSkill,
-  removeLegacyCodexGuidance,
-} from "./codex/skill.ts"
 import { loadConfig, templatesDir } from "./config.ts"
 import { runPipeline } from "./core/pipeline.ts"
 import type { ChoiceContext, Recorder, Sink } from "./core/types.ts"
 import { doctorExitCode, formatDoctorTable, runDoctorChecks } from "./doctor.ts"
+import { installClaudeHook } from "./hosts/claude.ts"
+import {
+  assertCodexSkillInstallable,
+  installCodexHook,
+  installCodexSkill,
+  removeLegacyCodexGuidance,
+} from "./hosts/codex.ts"
+import { assertCursorRuleInstallable, installCursorMcp, installCursorRule } from "./hosts/cursor.ts"
+import { assertDevinRuleInstallable, installDevinMcp, installDevinRule } from "./hosts/devin.ts"
+import { runPromptHookFromStdin } from "./hosts/prompt-hook.ts"
+import { DICTUM_MCP_INSTRUCTIONS } from "./hosts/rule.ts"
+import { shellQuote } from "./hosts/shared.ts"
 import { startMcpServer } from "./mcp/server.ts"
 import { createPolisher } from "./polisher/factory.ts"
 import { type PromptDimension, analyzePrompt } from "./polisher/rules.ts"
@@ -33,16 +40,10 @@ import { StatusReporter } from "./ui/status.ts"
 
 const VERSION: string = pkg.version
 
-export type CliCommand =
-  | "run"
-  | "doctor"
-  | "mcp"
-  | "codex-hook"
-  | "codex-setup"
-  | "help"
-  | "version"
+export type CliCommand = "run" | "doctor" | "mcp" | "prompt-hook" | "integrate" | "help" | "version"
 
 export type OutputFormat = "text" | "json"
+export type HostName = "claude" | "codex" | "cursor" | "devin"
 
 export type CliOptions = {
   command: CliCommand
@@ -60,8 +61,12 @@ export type CliOptions = {
   mode: string | undefined
   /** Output format: plain polished text (default) or a JSON envelope. */
   format: OutputFormat
-  /** Absolute Dictum binary path used by `codex setup`. */
+  /** Host selected by `integrate`, including the `codex setup` alias. */
+  host: HostName | undefined
+  /** Dictum binary path written to host configuration. */
   binary: string | undefined
+  /** Install the host's project rule in the current working directory. */
+  project: boolean
   /** Unknown / error message produced while parsing, if any. */
   error: string | undefined
 }
@@ -72,8 +77,11 @@ Usage:
   dictum [options]            Record (or read --input/--text/stdin), polish, emit
   dictum doctor               Check microphone, STT, polisher and clipboard
   dictum mcp                  Run as an MCP server (host-brain prompts + tools) over stdio
-  dictum codex setup --binary <path>
-                              Install/update the Codex prefix hook and $dictum skill
+  dictum integrate <host> [--binary <path>] [--project]
+                              Configure claude, codex, cursor, or devin
+  dictum codex setup [--binary <path>]
+                              Alias for 'dictum integrate codex'
+  dictum prompt-hook          UserPromptSubmit hook used by Codex and Claude Code
   dictum --help               Show this help
   dictum --version            Show version
 
@@ -90,7 +98,8 @@ Options:
       --stdout                Print result to stdout instead of the clipboard
       --format <text|json>    Output format. json emits a stable envelope:
                               {v, original, polished, template, score, rationale}
-      --binary <path>         Dictum binary path for 'dictum codex setup'
+      --binary <path>         Dictum binary path written to host configuration
+      --project               Add a project rule for Cursor or Devin in CWD
   -h, --help                  Show help
   -v, --version               Show version
 
@@ -104,6 +113,7 @@ Examples:
   dictum --input note.wav --stdout
   dictum -m commit --auto --stdout | git commit -F -
   dictum --text "draft" --auto --stdout --format json | jq .polished
+  dictum integrate cursor --binary "$(command -v dictum)" --project
 `
 
 /**
@@ -120,7 +130,9 @@ export function parseCliArgs(argv: string[]): CliOptions {
     auto: false,
     mode: undefined,
     format: "text",
+    host: undefined,
     binary: undefined,
+    project: false,
     error: undefined,
   }
 
@@ -142,6 +154,7 @@ export function parseCliArgs(argv: string[]): CliOptions {
         stdout: { type: "boolean" },
         format: { type: "string" },
         binary: { type: "string" },
+        project: { type: "boolean" },
       },
     })
   } catch (err) {
@@ -155,16 +168,40 @@ export function parseCliArgs(argv: string[]): CliOptions {
   if (values.help === true) return { ...base, command: "help" }
 
   let command: CliCommand = "run"
+  let host: HostName | undefined
   if (positionals.length > 0) {
     const cmd = positionals[0]
     if (cmd === "doctor") {
       command = "doctor"
     } else if (cmd === "mcp") {
       command = "mcp"
-    } else if (cmd === "codex-hook" && positionals.length === 1) {
-      command = "codex-hook"
+    } else if ((cmd === "prompt-hook" || cmd === "codex-hook") && positionals.length === 1) {
+      command = "prompt-hook"
+    } else if (cmd === "integrate") {
+      if (positionals.length !== 2) {
+        return {
+          ...base,
+          error:
+            "Usage: dictum integrate <claude|codex|cursor|devin> [--binary <path>] [--project]",
+        }
+      }
+      const requestedHost = positionals[1]
+      if (
+        requestedHost !== "claude" &&
+        requestedHost !== "codex" &&
+        requestedHost !== "cursor" &&
+        requestedHost !== "devin"
+      ) {
+        return {
+          ...base,
+          error: `Unknown host '${requestedHost}'. Valid: claude, codex, cursor, devin`,
+        }
+      }
+      command = "integrate"
+      host = requestedHost
     } else if (cmd === "codex" && positionals.length === 2 && positionals[1] === "setup") {
-      command = "codex-setup"
+      command = "integrate"
+      host = "codex"
     } else if (cmd === "run") {
       command = "run"
     } else {
@@ -194,7 +231,9 @@ export function parseCliArgs(argv: string[]): CliOptions {
     auto: values.auto === true,
     mode: str(values.mode) ?? str(values.template),
     format,
+    host,
     binary: str(values.binary),
+    project: values.project === true,
     error: undefined,
   }
 }
@@ -204,40 +243,106 @@ export function parseCliArgs(argv: string[]): CliOptions {
  * and drop the legacy v0.1.x guidance block whose plain-text 1/2/3 flow would
  * conflict with the native four-choice review panel.
  */
-async function runCodexSetup(binary: string | undefined): Promise<number> {
-  if (!binary?.trim()) {
-    process.stderr.write(
-      'dictum: codex setup requires --binary <path> (for example: --binary "$(command -v dictum)").\n',
-    )
-    return 2
-  }
-
-  const binaryPath = resolve(binary)
+async function integrateCodex(binaryPath: string): Promise<void> {
   const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), ".codex")
   const hooksPath = join(codexHome, "hooks.json")
   const skillDir = join(homedir(), ".agents", "skills", "dictum")
 
+  // Preflight the independent skill target so a name collision cannot leave
+  // a newly-installed hook behind after integration reports failure.
+  await assertCodexSkillInstallable(skillDir)
+  const hook = await installCodexHook(hooksPath, binaryPath)
+  const skill = await installCodexSkill(skillDir)
+  const guidancePath = join(codexHome, "AGENTS.md")
+  const legacyRemoved = await removeLegacyCodexGuidance(guidancePath)
+  process.stdout.write(`Codex hook: ${fileState(hook)} (${hooksPath})\n`)
+  process.stdout.write(`Codex skill: ${skill} (${skillDir})\n`)
+  if (legacyRemoved) {
+    process.stdout.write(`Codex guidance: removed the legacy dictum block (${guidancePath})\n`)
+  }
+  process.stdout.write(
+    "Start a new Codex session, open /hooks, and trust 'Routing Dictum prompt'.\n",
+  )
+}
+
+function fileState(result: { changed: boolean; created: boolean }): string {
+  return result.changed ? (result.created ? "installed" : "updated") : "unchanged"
+}
+
+async function runIntegrate(opts: CliOptions): Promise<number> {
+  if (!opts.host) return 2
+  if (opts.project && opts.host !== "cursor" && opts.host !== "devin") {
+    process.stderr.write("dictum: --project is supported only for cursor and devin.\n")
+    return 2
+  }
+  const runtimeName = basename(process.execPath).toLowerCase()
+  const runningUnderBun = runtimeName === "bun" || runtimeName === "bun.exe"
+  const candidate = opts.binary?.trim() || (runningUnderBun ? Bun.argv[1] : process.execPath)
+  if (!candidate?.trim()) {
+    process.stderr.write("dictum: integrate could not determine the Dictum binary path.\n")
+    return 2
+  }
+  const binaryPath = resolve(candidate)
+  // A path that cannot be executed would be written into host configs and
+  // break every future prompt silently (e.g. `bun src/cli.ts integrate …`
+  // auto-detects the non-executable source file). Fail closed instead.
   try {
-    // Preflight the independent skill target so a name collision cannot leave
-    // a newly-installed hook behind after setup reports failure.
-    await assertCodexSkillInstallable(skillDir)
-    const hook = await installCodexHook(hooksPath, binaryPath)
-    const skill = await installCodexSkill(skillDir)
-    const guidancePath = join(codexHome, "AGENTS.md")
-    const legacyRemoved = await removeLegacyCodexGuidance(guidancePath)
-    const hookState = hook.changed ? (hook.created ? "installed" : "updated") : "unchanged"
-    process.stdout.write(`Codex hook: ${hookState} (${hooksPath})\n`)
-    process.stdout.write(`Codex skill: ${skill} (${skillDir})\n`)
-    if (legacyRemoved) {
-      process.stdout.write(`Codex guidance: removed the legacy dictum block (${guidancePath})\n`)
-    }
-    process.stdout.write(
-      "Start a new Codex session, open /hooks, and trust 'Routing Dictum prompt'.\n",
+    await access(binaryPath, fsConstants.X_OK)
+  } catch {
+    process.stderr.write(
+      `dictum: '${binaryPath}' is not an executable file — refusing to write it into host configuration. Pass --binary <path to the installed dictum executable>.\n`,
     )
+    return 2
+  }
+
+  try {
+    if (opts.host === "codex") {
+      await integrateCodex(binaryPath)
+    } else if (opts.host === "claude") {
+      const path = join(homedir(), ".claude", "settings.json")
+      const hook = await installClaudeHook(path, binaryPath)
+      process.stdout.write(`Claude hook: ${fileState(hook)} (${path})\n`)
+      process.stdout.write(
+        `Register the MCP server if needed: claude mcp add --scope user dictum -- ${shellQuote(binaryPath)} mcp\n`,
+      )
+    } else if (opts.host === "cursor") {
+      const mcpPath = join(homedir(), ".cursor", "mcp.json")
+      const rulePath = join(process.cwd(), ".cursor", "rules", "dictum.mdc")
+      if (opts.project) await assertCursorRuleInstallable(rulePath)
+      const mcp = await installCursorMcp(mcpPath, binaryPath)
+      process.stdout.write(`Cursor MCP: ${fileState(mcp)} (${mcpPath})\n`)
+      if (opts.project) {
+        const rule = await installCursorRule(rulePath)
+        process.stdout.write(`Cursor rule: ${rule} (${rulePath})\n`)
+      } else {
+        process.stdout.write(
+          `Cursor User Rule (paste into Settings > Rules):\n\n${DICTUM_MCP_INSTRUCTIONS}\n`,
+        )
+      }
+    } else {
+      // Devin Desktop docs disagree mid-migration: the FAQ names
+      // ~/.codeium/mcp_config.json while the MCP page still shows the legacy
+      // ~/.codeium/windsurf/mcp_config.json. Merge both — idempotent and
+      // foreign-content-preserving — so either build finds the server.
+      const mcpPaths = [
+        join(homedir(), ".codeium", "mcp_config.json"),
+        join(homedir(), ".codeium", "windsurf", "mcp_config.json"),
+      ]
+      const rulePath = join(process.cwd(), ".devin", "rules", "dictum.md")
+      if (opts.project) await assertDevinRuleInstallable(rulePath)
+      for (const mcpPath of mcpPaths) {
+        const mcp = await installDevinMcp(mcpPath, binaryPath)
+        process.stdout.write(`Devin MCP: ${fileState(mcp)} (${mcpPath})\n`)
+      }
+      if (opts.project) {
+        const rule = await installDevinRule(rulePath)
+        process.stdout.write(`Devin rule: ${rule} (${rulePath})\n`)
+      }
+    }
     return 0
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err)
-    process.stderr.write(`dictum: Codex setup failed: ${reason}\n`)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`dictum: ${opts.host} integration failed: ${reason}\n`)
     return 1
   }
 }
@@ -457,11 +562,11 @@ export async function main(argv: string[]): Promise<number> {
     case "mcp":
       await startMcpServer()
       return 0
-    case "codex-hook":
-      await runCodexHookFromStdin()
+    case "prompt-hook":
+      await runPromptHookFromStdin()
       return 0
-    case "codex-setup":
-      return runCodexSetup(opts.binary)
+    case "integrate":
+      return runIntegrate(opts)
     case "run":
       return runCommand(opts)
   }

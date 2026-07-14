@@ -34,7 +34,8 @@ When [Codex CLI](https://github.com/openai/codex) is installed, the release
 installer also registers the Dictum MCP server and configures deterministic
 `dictum:` routing — a `UserPromptSubmit` prefix hook plus a managed `$dictum`
 skill (set `DICTUM_CODEX=0` to skip; `dictum codex setup --binary <path>` runs
-the same setup manually). Start a new Codex session, open `/hooks`, and trust
+the same setup manually; `dictum integrate codex` is the preferred spelling).
+Start a new Codex session, open `/hooks`, and trust
 “Routing Dictum prompt”. Then write directly in the chat:
 
 ```text
@@ -108,6 +109,37 @@ five dimensions (clarity, specificity, structure, actionability, context). The
 interactive chooser shows the delta (`score 34 → 78 · structure +5`), and
 `--format json` carries the full breakdown for scripts and integrations.
 
+## Integrate with coding hosts
+
+`dictum integrate` safely merges Dictum into host configuration: unknown JSON
+keys and foreign hooks/servers are preserved, writes are atomic, existing file
+permissions are retained, and rerunning the command is idempotent.
+
+```sh
+dictum integrate codex
+dictum integrate claude
+dictum integrate cursor --project
+dictum integrate devin --project
+```
+
+`--binary <path>` overrides the executable path recorded in configuration; it
+normally defaults to the running Dictum executable. `--project` writes the
+always-on project rule in the current directory for Cursor or Devin Desktop.
+
+| Host | What `integrate` configures | Verification status |
+|------|-------------------------------|---------------------|
+| Codex CLI | `UserPromptSubmit` hook + managed `$dictum` skill; `codex setup` remains an alias | **Live verified** on Codex 0.144.3; v0.3 migration covered by automated tests |
+| Claude Code | `UserPromptSubmit` hook in `~/.claude/settings.json`; prints the exact `claude mcp add` command | **Live verified** on Claude Code 2.1.209; cancel stopped without acting |
+| Cursor | Dictum in `~/.cursor/mcp.json`; with `--project`, `.cursor/rules/dictum.mdc`; otherwise prints plain User Rule text | **Automated verified**, live Cursor UI pending |
+| Devin Desktop (formerly Windsurf) | Dictum in `~/.codeium/mcp_config.json` AND the legacy `~/.codeium/windsurf/mcp_config.json` (official docs disagree mid-migration, so both are merged); with `--project`, `.devin/rules/dictum.md` | **Automated verified**, live Devin Desktop UI pending |
+
+Codex's release installer already registers MCP. For a manual Codex setup,
+register the server with `codex mcp add dictum -- "$(command -v dictum)" mcp`.
+Claude integration always prints its equivalent user-scoped command because
+Claude Code owns MCP registration. Cursor and Devin integration merge MCP JSON
+directly. None of these commands starts the underlying task: after a
+`dictum:` prefix, only the review decision **Act** authorizes work.
+
 ## Dictum inside your agent (MCP)
 
 The flagship way to use Dictum: as a **prompt overlay for the coding agent you
@@ -123,11 +155,11 @@ dictum mcp        # serve host-brain prompts + tools over stdio
 
 | Host | Host-brain channel | How you invoke it |
 |------|--------------------|-------------------|
-| Claude Code | MCP Prompts | `/mcp__dictum__polish <draft>` (also `__spec`, `__decompose`) |
-| Cursor | MCP Prompts | type `/`, pick the dictum prompt |
-| Windsurf | MCP Prompts | via Cascade |
+| Claude Code | Prefix hook + MCP prompts/tools | `dictum: <draft>` or `/mcp__dictum__polish <draft>` |
+| Cursor | Always-on rule + full MCP | `dictum: <draft>`; or type `/` and pick the dictum prompt |
+| Devin Desktop (formerly Windsurf) | Always-on rule + MCP tools | `dictum: <draft>` in the agent chat; review falls back to numbered text if needed |
 | Claude Desktop | MCP Prompts | "+" menu → Add from dictum |
-| Codex CLI | `polish_brief` tool | ask it to polish; it calls the tool and follows the brief |
+| Codex CLI | Prefix hook + `polish_brief` tool | `dictum: <draft>` |
 
 Register the server. For Claude Code:
 
@@ -143,9 +175,8 @@ command = "dictum"
 args = ["mcp"]
 ```
 
-For Cursor (`.cursor/mcp.json` project-level or `~/.cursor/mcp.json` global),
-Windsurf, or Claude Desktop (`claude_desktop_config.json`) — the de-facto
-standard JSON shape:
+For Cursor, Devin Desktop, or Claude Desktop (`claude_desktop_config.json`) —
+the de-facto standard JSON shape:
 
 ```json
 {
@@ -163,9 +194,11 @@ standard JSON shape:
   acceptance criteria.
 - **`decompose(draft?)`** — draft → ordered, dependency-tracked subtasks.
 
-Every brief ends the same way: the agent shows the result and a numbered
-choice — reply **1** to act on it, **2** to keep your original, **3** to tweak.
-Dictum proposes; you decide.
+Every brief ends the same way: the agent shows the result and asks you to
+**Act**, **Keep the original**, **Generate another version**, or **Enter
+corrections**. Native MCP elicitation is used when the host supports it;
+otherwise Dictum supplies the same gate as numbered text. Dictum proposes; you
+decide.
 
 **Tools:**
 

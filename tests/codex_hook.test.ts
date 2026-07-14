@@ -7,7 +7,7 @@ import {
   installCodexHook,
   parseDictumInvocation,
   runCodexHookFromStdin,
-} from "../src/codex/hook.ts"
+} from "../src/hosts/codex.ts"
 
 type HookHandler = Record<string, unknown> & {
   command?: string
@@ -135,11 +135,14 @@ describe("Codex UserPromptSubmit I/O", () => {
   })
 
   test("the executable reads a real Bun process stdin stream", async () => {
-    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/codex/hook.ts")], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    })
+    const child = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "../src/hosts/prompt-hook.ts")],
+      {
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    )
     child.stdin.write(
       JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: "dictum: проверь stdin" }),
     )
@@ -171,7 +174,7 @@ describe("installCodexHook", () => {
       expect(groups[0]!.matcher).toBeUndefined()
       expect(handler).toEqual({
         type: "command",
-        command: `'/opt/Dictum'"'"'s bin' codex-hook`,
+        command: `'/opt/Dictum'"'"'s bin' prompt-hook`,
         timeout: 10,
         statusMessage: DICTUM_CODEX_HOOK_STATUS_MESSAGE,
       })
@@ -272,7 +275,7 @@ describe("installCodexHook", () => {
       expect(handlers[1]).toEqual(statusCollision)
       expect(handlers[2]).toEqual({
         type: "command",
-        command: "'/new/dictum' codex-hook",
+        command: "'/new/dictum' prompt-hook",
         timeout: 10,
         statusMessage: DICTUM_CODEX_HOOK_STATUS_MESSAGE,
       })
@@ -310,7 +313,7 @@ describe("installCodexHook", () => {
       expect(managedHandlers).toEqual([
         {
           type: "command",
-          command: "'/current/dictum' codex-hook",
+          command: "'/current/dictum' prompt-hook",
           timeout: 10,
           statusMessage: DICTUM_CODEX_HOOK_STATUS_MESSAGE,
         },

@@ -36,6 +36,7 @@ import { ErrorCode, GetPromptRequestSchema, McpError } from "@modelcontextprotoc
 import { z } from "zod"
 import pkg from "../../package.json" with { type: "json" }
 import { type Config, loadConfig, templatesDir } from "../config.ts"
+import { DICTUM_MCP_INSTRUCTIONS } from "../hosts/rule.ts"
 import { createPolisher } from "../polisher/factory.ts"
 import { analyzePrompt } from "../polisher/rules.ts"
 import { availableTemplateNames, resolveTemplate } from "../polisher/templates.ts"
@@ -56,9 +57,7 @@ import {
  * use the server. Keep the explicit trigger and safety gate in the first 512
  * characters so `dictum:` cannot be mistaken for permission to start work.
  */
-export const DICTUM_MCP_INSTRUCTIONS = `Dictum is an input-agnostic prompt-engineering assistant and review gate. If a user message starts with "dictum:", "dictum spec:", or "dictum decompose:", do not execute it. Before inspecting the project or calling any other tool, call polish_brief with the text after the prefix and mode polish, spec, or decompose. Follow the returned brief: propose the rewritten prompt and wait for explicit confirmation. Never treat a Dictum-prefixed draft as a request to start work immediately.
-
-After writing the proposal, call present_prompt with the original draft and proposal. That tool opens the client's native confirmation UI when MCP elicitation is supported and otherwise returns a numbered fallback. Choice 1 authorizes the proposal. Choice 2 keeps the original and does not start work. Choice 3 requests a fresh alternative. Choice 4 opens a required corrections field. Revise or regenerate as requested, present the complete new proposal, and call present_prompt again.`
+export { DICTUM_MCP_INSTRUCTIONS }
 
 /** Refines `text` with the given template `mode`; resolves to the polished text. */
 export type PolishFn = (text: string, mode?: string) => Promise<string>

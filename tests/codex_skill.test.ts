@@ -11,7 +11,7 @@ import {
   assertCodexSkillInstallable,
   installCodexSkill,
   removeLegacyCodexGuidance,
-} from "../src/codex/skill.ts"
+} from "../src/hosts/codex.ts"
 
 const temporaryRoots: string[] = []
 

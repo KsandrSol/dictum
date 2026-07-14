@@ -8,7 +8,7 @@ Open-source tool: type or speak a thought → STT (voice only) → LLM polishing
 Recorder → STTProvider → Polisher → Sink     (interfaces in src/core/types.ts)
 ```
 
-Modules `recorder/`, `stt/`, `polisher/`, `sink/` import ONLY `core/types.ts` and their own files. Assembly happens exclusively in `core/pipeline.ts` and `cli.ts`; `mcp/` (host-brain briefs + tools) is assembly-level too and may import `polisher/*`. Cross-module imports are a bug — enforced by `tests/orthogonality.test.ts`.
+Modules `recorder/`, `stt/`, `polisher/`, `sink/` import ONLY `core/types.ts` and their own files. Assembly happens exclusively in `core/pipeline.ts` and `cli.ts`; `mcp/` (host-brain briefs + tools) and `hosts/` (host-integration installers + the shared prefix rule) are assembly-level too — `mcp/` may import `polisher/*` and reuses the canon from `hosts/rule.ts`. Cross-module imports are a bug — enforced by `tests/orthogonality.test.ts`.
 
 The polishing canon lives in two places kept in sync manually: `src/mcp/prompts.ts` ↔ `.claude/commands/dictum.md` — drift is caught by `tests/canon_sync.test.ts`.
 

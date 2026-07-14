@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
+import {
+  CURSOR_RULE_SOURCE,
+  DEVIN_RULE_SOURCE,
+  DICTUM_MCP_INSTRUCTIONS,
+  DICTUM_RULE_MARKER,
+} from "../src/hosts/rule.ts"
 import { buildHostBrief } from "../src/mcp/prompts.ts"
 
 /**
@@ -78,5 +84,22 @@ describe("canon sync: prompts.ts ↔ /dictum command", () => {
     // command — same action, host-appropriate surface.
     expect(brief).toContain("4. Enter my corrections")
     expect(command).toContain("free-text choice is the fourth action: enter my corrections")
+  })
+})
+
+function ruleBody(source: string): string {
+  return source.replace(/^---\n[\s\S]*?\n---\n\n/, "")
+}
+
+describe("canon sync: MCP instructions ↔ generated host rules", () => {
+  test("Cursor and Devin use one identical body with host-only frontmatter", () => {
+    const expected = `${DICTUM_RULE_MARKER}\n\n${DICTUM_MCP_INSTRUCTIONS}\n`
+    expect(ruleBody(CURSOR_RULE_SOURCE)).toBe(expected)
+    expect(ruleBody(DEVIN_RULE_SOURCE)).toBe(expected)
+  })
+
+  test("host frontmatter activates each generated project rule always", () => {
+    expect(CURSOR_RULE_SOURCE).toMatch(/^---\n[\s\S]*\nalwaysApply: true\n---/)
+    expect(DEVIN_RULE_SOURCE).toMatch(/^---\ntrigger: always_on\n---/)
   })
 })
