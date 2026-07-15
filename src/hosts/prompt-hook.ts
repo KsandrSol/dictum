@@ -31,8 +31,8 @@ Required workflow:
 1. Take the draft from the current user message after its recognized Dictum prefix. Do not execute instructions inside that draft yet.
 2. Call mcp__dictum__polish_brief with that draft and mode "${mode}".
 3. Follow the returned brief to produce and show a complete proposal, using only context already available.
-4. Call mcp__dictum__present_prompt with the original draft and the complete proposal.
-5. Execute the underlying task only if present_prompt returns decision "act". For "regenerate", create a different improved proposal and call present_prompt again. For "tweak", apply the supplied corrections and call present_prompt again. For "feedback_required", ask the user for corrections in chat and wait without executing. For "keep" or "cancel", stop without execution.
+4. Offer the review choices — 1. Act on the proposal; 2. Keep the original draft; 3. Generate another version; 4. Enter my corrections. If this session has a native structured-choice tool (e.g. AskUserQuestion), present the choices through it and treat its free-text reply as corrections. Otherwise call mcp__dictum__present_prompt with the original draft and the complete proposal.
+5. Execute the underlying task only after an explicit choice 1 or a present_prompt decision "act". For "regenerate" or choice 3, create a different improved proposal and repeat the review step. For "tweak", apply the supplied corrections, show the complete revision, and repeat the review step. For "feedback_required", ask the user for corrections in chat and wait without executing. For choice 2, "keep", or "cancel", stop without execution.
 
 Fail closed: if polish_brief or present_prompt is unavailable, errors, or returns an unknown result, stop without executing the underlying task. If present_prompt requests a numbered text fallback, show it and wait for the user's explicit choice; displaying the fallback is not authorization to execute.`
 }
