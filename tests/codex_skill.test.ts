@@ -29,12 +29,14 @@ describe("Dictum Codex skill", () => {
   test("has valid minimal frontmatter and the explicit MCP approval workflow", () => {
     expect(DICTUM_SKILL_SOURCE).toMatch(/^---\nname: dictum\ndescription: .+\n---\n/)
     expect(DICTUM_SKILL_SOURCE).toContain(DICTUM_SKILL_MARKER)
+    expect(DICTUM_SKILL_SOURCE).toContain("Hook-routed prefix requests do not require this skill")
     expect(DICTUM_SKILL_SOURCE).toContain("mcp__dictum__polish_brief")
     expect(DICTUM_SKILL_SOURCE).toContain("mcp__dictum__present_prompt")
-    expect(DICTUM_SKILL_SOURCE).toContain("Only a returned decision of `act`")
-    expect(DICTUM_SKILL_SOURCE).toContain("For `regenerate`")
-    expect(DICTUM_SKILL_SOURCE).toContain("For `tweak`, apply the")
-    expect(DICTUM_SKILL_SOURCE).toContain("For `feedback_required`")
+    expect(DICTUM_SKILL_SOURCE).toContain("Follow the tool's returned instruction exactly")
+    expect(DICTUM_SKILL_SOURCE).toContain("`act` or fallback choice 1")
+    expect(DICTUM_SKILL_SOURCE).toContain("Follow every other decision without starting that task")
+    expect(DICTUM_SKILL_SOURCE).toContain("error or unknown result must fail closed")
+    expect(DICTUM_SKILL_SOURCE.length).toBeLessThan(1500)
     expect(DICTUM_SKILL_METADATA).toContain('default_prompt: "Use $dictum')
   })
 

@@ -522,26 +522,67 @@ describe("handlePresentPrompt (direct)", () => {
   })
 
   test("falls back to a numbered gate when native elicitation is unavailable", async () => {
-    const r = await handlePresentPrompt({ original: "draft", proposed: "polished" })
-    expect(decisionOf(r)).toBe("cancel")
+    const original = "ORIGINAL_SENTINEL"
+    const proposed = "polished\nwith every required detail"
+    const r = await handlePresentPrompt({ original, proposed })
+    expect(decisionOf(r)).toBe("fallback_required")
+    expect(firstText(r)).toContain(`Proposed prompt:\n\n\`\`\`\n${proposed}\n\`\`\``)
     expect(firstText(r)).toContain("1. Act")
     expect(firstText(r)).toContain("3. Generate another version")
     expect(firstText(r)).toContain("4. Enter my corrections")
-    expect(firstText(r)).toContain("Do not start work yet")
+    expect(firstText(r)).toContain("show the complete new version and repeat the review")
+    expect(firstText(r)).toContain("reply with 1, 2, 3, or 4")
+    expect(firstText(r).indexOf(proposed)).toBeLessThan(firstText(r).indexOf("1. Act"))
+    expect(firstText(r)).toContain("do not start the underlying work")
+    expect(firstText(r).split(proposed)).toHaveLength(2) // exactly one safety copy
+    expect(firstText(r)).not.toContain(original)
+    expect(r.structuredContent).toEqual({ decision: "fallback_required" })
+  })
+
+  test("fallback fencing handles one million separate backtick runs", async () => {
+    const proposed = "` ".repeat(1_000_000)
+    const r = await handlePresentPrompt({ original: "draft", proposed })
+    expect(decisionOf(r)).toBe("fallback_required")
+    expect(firstText(r)).toContain("Proposed prompt:\n\n```\n")
+    expect(firstText(r)).toContain("\n```\n\n1. Act")
+  })
+
+  test("a native UI failure requests fallback instead of claiming the user cancelled", async () => {
+    const r = await handlePresentPrompt({ original: "draft", proposed: "polished" }, async () => {
+      throw new Error("client form renderer failed")
+    })
+    expect(decisionOf(r)).toBe("fallback_required")
+    expect(firstText(r)).toContain("could not open or process native confirmation")
+    expect(firstText(r)).toContain("Proposed prompt:\n\n```\npolished\n```")
+    expect(firstText(r)).not.toContain('"decision":"cancel"')
+  })
+
+  test("missing or malformed accepted choices fall back without authorizing work", async () => {
+    for (const content of [undefined, { decision: "unknown" }]) {
+      const r = await handlePresentPrompt(
+        { original: "draft", proposed: "polished" },
+        async () => ({ action: "accept", content }) as never,
+      )
+      expect(decisionOf(r)).toBe("fallback_required")
+      expect(firstText(r)).toContain("polished")
+      expect(firstText(r)).toContain("1. Act")
+    }
   })
 
   test("returns explicit approval only after the user accepts Act", async () => {
-    const r = await handlePresentPrompt(
-      { original: "draft", proposed: "polished" },
-      async (request) => {
-        expect(request.message).toContain("polished")
-        expect(request.requestedSchema.required).toEqual(["decision"])
-        expect(Object.keys(request.requestedSchema.properties)).toEqual(["decision"])
-        return { action: "accept", content: { decision: "act" } }
-      },
-    )
+    const original = "ORIGINAL_SENTINEL"
+    const proposed = "PROPOSED_SENTINEL"
+    const r = await handlePresentPrompt({ original, proposed }, async (request) => {
+      expect(request.message).toContain(proposed)
+      expect(request.requestedSchema.required).toEqual(["decision"])
+      expect(Object.keys(request.requestedSchema.properties)).toEqual(["decision"])
+      return { action: "accept", content: { decision: "act" } }
+    })
     expect(decisionOf(r)).toBe("act")
     expect(firstText(r)).toContain("explicitly approved")
+    expect(firstText(r)).not.toContain(original)
+    expect(firstText(r)).not.toContain(proposed)
+    expect(r.structuredContent).toEqual({ decision: "act" })
   })
 
   test("Generate another version returns regenerate without a second form", async () => {
@@ -607,7 +648,35 @@ describe("handlePresentPrompt (direct)", () => {
     expect(firstText(r)).toContain("Do not start")
   })
 
-  test("Keep and a dismissed panel never authorize work", async () => {
+  test("missing accepted corrections request chat feedback instead of claiming cancel", async () => {
+    let call = 0
+    const r = await handlePresentPrompt({ original: "draft", proposed: "polished" }, async () => {
+      call += 1
+      return call === 1
+        ? { action: "accept", content: { decision: "tweak" } }
+        : ({ action: "accept" } as never)
+    })
+    expect(decisionOf(r)).toBe("feedback_required")
+    expect(firstText(r)).toContain("did not deliver its contents")
+  })
+
+  test("whitespace and non-string corrections request chat feedback", async () => {
+    for (const feedback of [" \n\t ", 42]) {
+      let call = 0
+      const r = await handlePresentPrompt({ original: "draft", proposed: "polished" }, async () => {
+        call += 1
+        return call === 1
+          ? { action: "accept", content: { decision: "tweak" } }
+          : ({ action: "accept", content: { feedback } } as never)
+      })
+      expect(call).toBe(2)
+      expect(decisionOf(r)).toBe("feedback_required")
+      expect((r.structuredContent as { feedback?: string }).feedback).toBeUndefined()
+      expect(firstText(r)).toContain("did not deliver any corrections")
+    }
+  })
+
+  test("Keep and an explicitly dismissed panel never authorize work", async () => {
     const keep = await handlePresentPrompt(
       { original: "draft", proposed: "polished" },
       async () => ({ action: "accept", content: { decision: "keep" } }),

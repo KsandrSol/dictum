@@ -159,17 +159,12 @@ ${analysisBlock(trimmed)}
 Rewriting rules:
 ${RULES[kind]}
 ${tips ? `\n${tips}\n` : ""}
-Then respond exactly like this:
+Then:
 1. Show the ${meta.deliverable} in a fenced block, followed by any "Open question:" lines.
 2. Add one line on what you changed and why.
-3. Offer the next-step choice:
-   1. Act on the ${meta.deliverable}
-   2. Keep the original draft
-   3. Generate another version
-   4. Enter my corrections
-   If this session has a native structured-choice tool (e.g. AskUserQuestion), present these choices through it and treat its free-text reply as corrections. Otherwise call Dictum's present_prompt tool with the complete original draft and complete proposed ${meta.deliverable} — it opens the client's native review panel, where choosing 4 opens a required free-text follow-up. If present_prompt reports that native confirmation is unavailable, show the same choices as a plain-text numbered list and tell the user to reply with 1, 2, 3, or 4, or type their corrections directly.
+3. If this session has a native structured-choice tool (e.g. AskUserQuestion), use it for Act / Keep / Regenerate and treat its free-text reply as Corrections; otherwise call Dictum's present_prompt tool with the complete original draft and complete proposed ${meta.deliverable}. Follow the selected action or returned instruction exactly. After Regenerate or Corrections, show the complete new version and repeat the review. Only a later explicit approval of the visible proposal (native Act, decision "act", or fallback choice 1) authorizes the underlying task. If present_prompt is unavailable or errors, ask for explicit approval in chat and wait.
 
-Treat the choice as follows: 1 explicitly authorizes acting on the ${meta.deliverable}; 2 discards the rewrite and preserves the original without starting work; 3 creates a meaningfully different improved version; 4 or any custom feedback applies the user's corrections. After 3 or 4, show the complete new ${meta.deliverable} and repeat the review step. Do not start the work until they choose. Do not inspect the project, call unrelated tools, or start the underlying work before choice 1.
+Do not inspect the project, call unrelated tools, or start the underlying work before that approval.
 
 If the draft looks cut off mid-sentence (slash-command argument parsing can truncate multi-word input), ask the user to restate the full draft instead of guessing.`
 }

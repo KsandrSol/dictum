@@ -194,10 +194,14 @@ the de-facto standard JSON shape:
   acceptance criteria.
 - **`decompose(draft?)`** — draft → ordered, dependency-tracked subtasks.
 
-Every brief ends the same way: the agent shows the result and asks you to
+Every host-brain flow ends the same way: the agent shows the result and asks you to
 **Act**, **Keep the original**, **Generate another version**, or **Enter
 corrections**. Native MCP elicitation is used when the host supports it;
-otherwise Dictum supplies the same gate as numbered text. Dictum proposes; you
+otherwise Dictum returns `fallback_required` and supplies a self-contained text
+gate that repeats the complete proposal immediately before the numbered
+choices. Technical UI failures remain distinct from an explicit user cancel.
+Native decisions return only the decision and optional feedback; the original
+and proposal are not echoed back into the model context. Dictum proposes; you
 decide.
 
 **Tools:**

@@ -228,13 +228,12 @@ export type PromptDecision =
   | "regenerate"
   | "tweak"
   | "feedback_required"
+  | "fallback_required"
   | "cancel"
 
 export type PromptDecisionPayload = Record<string, unknown> & {
   decision: PromptDecision
   feedback?: string
-  original: string
-  proposed: string
 }
 
 type ElicitFn = (params: ElicitRequestFormParams) => Promise<ElicitResult>
@@ -244,6 +243,30 @@ function decisionResult(payload: PromptDecisionPayload, instruction: string): Ca
     content: [{ type: "text", text: `${JSON.stringify(payload)}\n\n${instruction}` }],
     structuredContent: payload,
   }
+}
+
+/** Fence arbitrary prompt text without letting embedded backticks close the block. */
+function fencedPrompt(proposed: string): string {
+  let longestRun = 0
+  let currentRun = 0
+  for (const character of proposed) {
+    if (character === "`") {
+      currentRun += 1
+      longestRun = Math.max(longestRun, currentRun)
+    } else {
+      currentRun = 0
+    }
+  }
+  const fence = "`".repeat(Math.max(3, longestRun + 1))
+  return `${fence}\n${proposed}\n${fence}`
+}
+
+/** A self-contained text gate for clients whose native elicitation is unavailable or broken. */
+function fallbackResult(proposed: string, reason: string): CallToolResult {
+  return decisionResult(
+    { decision: "fallback_required" },
+    `${reason} Repeat the complete fallback review below in chat, including the entire proposed prompt and every choice, then wait for an explicit reply. Do not shorten or omit the prompt, and do not start the underlying work.\n\nProposed prompt:\n\n${fencedPrompt(proposed)}\n\n1. Act on the polished prompt\n2. Keep the original draft and stop\n3. Generate another version\n4. Enter my corrections\n\nAfter Regenerate or Corrections, show the complete new version and repeat the review. Ask the user to reply with 1, 2, 3, or 4, or type their corrections directly.`,
+  )
 }
 
 /**
@@ -262,10 +285,7 @@ export async function handlePresentPrompt(
   if (!proposed) return textResult("Error: 'proposed' must be a non-empty string.", true)
 
   if (!elicit) {
-    return decisionResult(
-      { decision: "cancel", original, proposed },
-      "Native confirmation is unavailable. Show the proposal, then ask the user in plain text: 1. Act on the polished prompt; 2. Keep the original draft and stop; 3. Generate another version; 4. Enter my corrections. They may type the requested corrections directly. Do not start work yet.",
-    )
+    return fallbackResult(proposed, "Native confirmation is unavailable.")
   }
 
   let choiceResult: ElicitResult
@@ -292,16 +312,20 @@ export async function handlePresentPrompt(
       },
     })
   } catch {
+    return fallbackResult(proposed, "The client could not open or process native confirmation.")
+  }
+
+  if (choiceResult.action !== "accept") {
     return decisionResult(
-      { decision: "cancel", original, proposed },
-      "The client could not open native confirmation. Show the same 1/2/3/4 choices as plain text and wait; do not start work.",
+      { decision: "cancel" },
+      "The user dismissed Dictum's confirmation. Stop without starting the underlying work.",
     )
   }
 
-  if (choiceResult.action !== "accept" || !choiceResult.content) {
-    return decisionResult(
-      { decision: "cancel", original, proposed },
-      "The user dismissed Dictum's confirmation. Stop without starting the underlying work.",
+  if (!choiceResult.content) {
+    return fallbackResult(
+      proposed,
+      "The client accepted native confirmation but did not deliver the selected choice.",
     )
   }
 
@@ -312,27 +336,24 @@ export async function handlePresentPrompt(
     rawDecision !== "regenerate" &&
     rawDecision !== "tweak"
   ) {
-    return textResult(
-      "Error: the confirmation returned an unknown decision. Do not start the underlying work.",
-      true,
-    )
+    return fallbackResult(proposed, "The client returned an unknown native confirmation choice.")
   }
 
   if (rawDecision === "act") {
     return decisionResult(
-      { decision: "act", original, proposed },
+      { decision: "act" },
       "The user explicitly approved the proposed prompt. Act on it now.",
     )
   }
   if (rawDecision === "keep") {
     return decisionResult(
-      { decision: "keep", original, proposed },
+      { decision: "keep" },
       "Discard the rewrite and preserve the original draft. Do not start the underlying work.",
     )
   }
   if (rawDecision === "regenerate") {
     return decisionResult(
-      { decision: "regenerate", original, proposed },
+      { decision: "regenerate" },
       "Create a meaningfully different improved proposal without starting the underlying work. Show the complete new version, then call present_prompt again.",
     )
   }
@@ -360,15 +381,22 @@ export async function handlePresentPrompt(
     })
   } catch {
     return decisionResult(
-      { decision: "feedback_required", original, proposed },
+      { decision: "feedback_required" },
       "The native corrections field could not open. Ask the user in plain text what to add, remove, or correct. Apply only the corrections they provide, show the complete revision, and call present_prompt again. Do not start the underlying work.",
     )
   }
 
-  if (feedbackResult.action !== "accept" || !feedbackResult.content) {
+  if (feedbackResult.action !== "accept") {
     return decisionResult(
-      { decision: "cancel", original, proposed },
+      { decision: "cancel" },
       "The user dismissed Dictum's corrections field. Stop without starting the underlying work.",
+    )
+  }
+
+  if (!feedbackResult.content) {
+    return decisionResult(
+      { decision: "feedback_required" },
+      "The client accepted the corrections form but did not deliver its contents. Ask the user in plain text what to add, remove, or correct. Apply only the corrections they provide, show the complete revision, and call present_prompt again. Do not start the underlying work.",
     )
   }
 
@@ -377,14 +405,14 @@ export async function handlePresentPrompt(
       ? feedbackResult.content.feedback.trim()
       : ""
   if (!feedback) {
-    return textResult(
-      "Error: corrections must be non-empty. Ask what should change and do not start the underlying work.",
-      true,
+    return decisionResult(
+      { decision: "feedback_required" },
+      "The client did not deliver any corrections. Ask the user in plain text what to add, remove, or correct. Apply only the corrections they provide, show the complete revision, and call present_prompt again. Do not start the underlying work.",
     )
   }
 
   return decisionResult(
-    { decision: "tweak", feedback, original, proposed },
+    { decision: "tweak", feedback },
     "Revise the proposal using the user's feedback, show the complete new version, then call present_prompt again. Do not start the underlying work.",
   )
 }
@@ -458,7 +486,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Get a polishing brief (host-executed)",
       description:
-        "MANDATORY first step for messages beginning `dictum:`, `dictum spec:`, or `dictum decompose:`. Return Dictum's rewriting brief for YOU to execute using this session's context — do not start the underlying task and do not expect polished text back from this tool. After producing the complete proposal, call present_prompt and wait for the user's decision. Prefer this over polish_prompt when you have the context. Offline, no LLM call. Modes: polish (default), spec, decompose.",
+        "First step for `dictum:`, `dictum spec:`, or `dictum decompose:`. Returns a host-executed rewrite brief, not polished text or permission to act. After writing the proposal, call present_prompt. Offline; modes: polish (default), spec, decompose.",
       inputSchema: {
         text: z.string().describe("The rough draft to build the brief for."),
         mode: z.string().optional().describe("Brief kind: polish (default), spec, or decompose."),
@@ -478,7 +506,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Review and confirm a Dictum prompt",
       description:
-        "MANDATORY second step after polish_brief. Present the complete rewritten prompt in the client's native review UI and wait for Act, Keep original, Generate another version, or Enter my corrections. The corrections choice opens a required free-text follow-up. Never call this before you have written the proposal, and never start the underlying task unless the result decision is `act`. If the result is `regenerate` or `tweak`, create the requested revision and call this tool again. If it is `feedback_required`, ask for corrections in chat first.",
+        "Second step after writing the proposal. Opens the review UI and returns a decision plus an exact next-step instruction. Follow it exactly; only `act` authorizes the underlying task.",
       inputSchema: {
         original: z
           .string()
@@ -499,7 +527,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     "polish_prompt",
     {
       title: "Polish a prompt",
-      description: `Refine a rough thought or draft into a clear, well-structured prompt using Dictum's OWN model, server-side (it does not see this session's context — prefer polish_brief when you have context). Text in, polished text out (no voice). Available modes: ${modeList}.`,
+      description: `Server-side rewrite using Dictum's own model, which cannot see session context. Prefer polish_brief inside an agent. Available modes: ${modeList}.`,
       inputSchema: {
         text: z.string().describe("The rough thought or draft prompt to refine."),
         mode: z.string().optional().describe(modeHelp),
@@ -513,7 +541,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     {
       title: "Analyze a prompt",
       description:
-        "Score a prompt draft 0–100 across five dimensions (clarity, specificity, structure, actionability, context) and list its weak spots. Deterministic and offline — no LLM call. Returns JSON: {score, dimensions, issues}. Use it to decide whether a draft needs polishing.",
+        "Offline 0–100 prompt score across clarity, specificity, structure, actionability, and context. Returns JSON: {score, dimensions, issues}.",
       inputSchema: {
         text: z.string().describe("The prompt draft to analyze."),
       },
@@ -525,8 +553,7 @@ export function createMcpServer(deps: McpDeps): McpServer {
     "build_spec",
     {
       title: "Build a task spec",
-      description:
-        "Expand a rough thought into a compact task spec with requirements and acceptance criteria (Dictum's 'spec' template). Text in, Markdown spec out.",
+      description: "Server-side Markdown task spec with requirements and acceptance criteria.",
       inputSchema: {
         text: z.string().describe("The rough task description to expand into a spec."),
       },

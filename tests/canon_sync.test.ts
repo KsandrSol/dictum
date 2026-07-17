@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { readFileSync } from "node:fs"
+import { promptHookOutput } from "../src/hosts/prompt-hook.ts"
 import {
   CURSOR_RULE_SOURCE,
   DEVIN_RULE_SOURCE,
@@ -34,14 +35,15 @@ describe("canon sync: prompts.ts ↔ /dictum command", () => {
     expect(rulesBlock(command)).toBe(rulesBlock(brief))
   })
 
-  test("both surfaces carry the propose-don't-replace flow", () => {
+  test("both surfaces carry host-appropriate propose-don't-replace gates", () => {
     const brief = buildHostBrief("polish", "some draft")
     const command = readFileSync(COMMAND_FILE, "utf8")
-    for (const surface of [brief, command]) {
-      expect(surface).toContain("Do NOT act on the draft yet")
-      expect(surface).toContain("Keep the original draft")
-      expect(surface).toContain("Do not start the work until they choose")
-    }
+    expect(brief).toContain("Do NOT act on the draft yet")
+    expect(brief).toContain("Only a later explicit approval of the visible proposal")
+    expect(brief).toContain("before that approval")
+    expect(command).toContain("Do NOT act on the draft yet")
+    expect(command).toContain("Keep the original draft")
+    expect(command).toContain("Do not start the work until they choose")
   })
 
   test("both surfaces mark the draft as data, never instructions (injection guard)", () => {
@@ -68,22 +70,38 @@ describe("canon sync: prompts.ts ↔ /dictum command", () => {
     expect(block(command)).toBe(block(brief))
   })
 
-  test("both surfaces expose the same predefined choices and a corrections path", () => {
+  test("all surfaces prefer native structured choices with free-text corrections", () => {
     const brief = buildHostBrief("polish", "some draft")
     const command = readFileSync(COMMAND_FILE, "utf8")
+    const hook = JSON.parse(
+      promptHookOutput(
+        JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: "dictum: some draft" }),
+      ),
+    ).hookSpecificOutput.additionalContext as string
+    for (const surface of [brief, command, hook, DICTUM_MCP_INSTRUCTIONS]) {
+      expect(surface).toContain("structured-choice tool")
+      expect(surface).toContain("AskUserQuestion")
+      expect(surface).toContain(
+        "After Regenerate or Corrections, show the complete new version and repeat the review.",
+      )
+    }
+    for (const surface of [brief, hook, DICTUM_MCP_INSTRUCTIONS]) {
+      expect(surface).toContain("Act / Keep / Regenerate")
+      expect(surface).toContain("free-text reply as Corrections")
+      expect(surface.indexOf("structured-choice tool")).toBeLessThan(
+        surface.indexOf("present_prompt"),
+      )
+    }
     for (const line of [
       "1. Act on the polished prompt",
       "2. Keep the original draft",
       "3. Generate another version",
     ]) {
-      expect(brief).toContain(line)
       expect(command).toContain(line)
     }
-    // The fourth action (user corrections) is the native panel field in the
-    // MCP brief and the structured-choice free-text path in the zero-install
-    // command — same action, host-appropriate surface.
-    expect(brief).toContain("4. Enter my corrections")
     expect(command).toContain("free-text choice is the fourth action: enter my corrections")
+    expect(brief).toContain("present_prompt tool")
+    expect(brief).toContain("Follow the selected action or returned instruction exactly")
   })
 })
 
@@ -92,6 +110,10 @@ function ruleBody(source: string): string {
 }
 
 describe("canon sync: MCP instructions ↔ generated host rules", () => {
+  test("keeps the always-on routing rule compact", () => {
+    expect(DICTUM_MCP_INSTRUCTIONS.length).toBeLessThan(1000)
+  })
+
   test("Cursor and Devin use one identical body with host-only frontmatter", () => {
     const expected = `${DICTUM_RULE_MARKER}\n\n${DICTUM_MCP_INSTRUCTIONS}\n`
     expect(ruleBody(CURSOR_RULE_SOURCE)).toBe(expected)

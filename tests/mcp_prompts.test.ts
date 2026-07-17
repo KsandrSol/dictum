@@ -40,19 +40,25 @@ describe("buildHostBrief — common envelope", () => {
   test("forbids acting before the user chooses (propose, don't replace)", () => {
     const brief = buildHostBrief("polish", MESSY)
     expect(brief).toContain("Do NOT act on the draft yet")
-    expect(brief).toContain("Keep the original draft")
-    expect(brief).toContain("Do not start the work until they choose")
+    expect(brief).toContain("Only a later explicit approval of the visible proposal")
+    expect(brief).toContain("before that approval")
   })
 
-  test("offers the confirm step as a present_prompt review panel with a text fallback", () => {
+  test("prefers a native structured choice and falls back to present_prompt", () => {
     const brief = buildHostBrief("polish", MESSY)
+    expect(brief).toContain("native structured-choice tool (e.g. AskUserQuestion)")
+    expect(brief).toContain("Act / Keep / Regenerate")
+    expect(brief).toContain("treat its free-text reply as Corrections")
     expect(brief).toContain("present_prompt tool")
-    expect(brief).toContain("1. Act on the polished prompt")
-    expect(brief).toContain("2. Keep the original draft")
-    expect(brief).toContain("3. Generate another version")
-    expect(brief).toContain("4. Enter my corrections")
-    expect(brief).toContain("reply with 1, 2, 3, or 4") // fallback without native elicitation
-    expect(brief).toContain("before choice 1")
+    expect(brief).toContain("complete proposed polished prompt")
+    expect(brief).toContain("Follow the selected action or returned instruction exactly")
+    expect(brief).toContain("show the complete new version and repeat the review")
+    expect(brief).toContain('native Act, decision "act", or fallback choice 1')
+    expect(brief).toContain("If present_prompt is unavailable or errors")
+  })
+
+  test("keeps the OpenAI polish brief within its context budget", () => {
+    expect(buildHostBrief("polish", MESSY, "openai").length).toBeLessThan(3300)
   })
 
   test("embeds the deterministic score and the analyzer's weak spots", () => {
@@ -137,7 +143,7 @@ describe("buildHostBrief — kind-specific canon", () => {
     for (const kind of HOST_PROMPT_KINDS) {
       const brief = buildHostBrief(kind, MESSY)
       expect(brief).toContain(`Show the ${HOST_PROMPT_META[kind].deliverable} in a fenced block`)
-      expect(brief).toContain(`1. Act on the ${HOST_PROMPT_META[kind].deliverable}`)
+      expect(brief).toContain(`complete proposed ${HOST_PROMPT_META[kind].deliverable}`)
     }
   })
 })
@@ -153,7 +159,7 @@ describe("provider-aware tips", () => {
     expect(brief).toContain("Model-specific tips (the polished prompt will run on an Anthropic")
     expect(brief).toContain("XML-style tags")
     expect(brief.indexOf("Rewriting rules:")).toBeLessThan(brief.indexOf("Model-specific tips"))
-    expect(brief.indexOf("Model-specific tips")).toBeLessThan(brief.indexOf("Then respond"))
+    expect(brief.indexOf("Model-specific tips")).toBeLessThan(brief.indexOf("Then:"))
   })
 
   test("openai family appends OpenAI prompting advice", () => {
