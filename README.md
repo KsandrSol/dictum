@@ -57,6 +57,18 @@ bun run src/cli.ts doctor   # check mic / STT / polisher / clipboard
 bun run src/cli.ts          # speak, then press Enter → polished prompt on your clipboard
 ```
 
+## Updating
+
+Re-run the release installer to update a prebuilt binary, run
+`npm i -g dictum-cli@latest` for an npm installation, or pull the latest source
+and rerun `bun install --frozen-lockfile`. After the binary updates, hook and
+MCP startup automatically refresh the installed marker-owned Codex skill and,
+if you copied it into `~/.claude/commands`, the Claude `/dictum` command.
+Absent and unmanaged files stay untouched. Cursor and Devin rules are
+project-scoped; refresh them by rerunning `dictum integrate <host> --project`
+in that project. `dictum status` (or `--json`) reports user-managed-file drift,
+and `dictum update --check` reports whether GitHub has a newer release.
+
 ## Why
 
 - **Talking is faster than typing a good prompt.** Speak the messy version; let

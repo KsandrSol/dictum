@@ -138,28 +138,31 @@ describe("Codex UserPromptSubmit I/O", () => {
   })
 
   test("the executable reads a real Bun process stdin stream", async () => {
-    const child = Bun.spawn(
-      [process.execPath, join(import.meta.dir, "../src/hosts/prompt-hook.ts")],
-      {
-        stdin: "pipe",
-        stdout: "pipe",
-        stderr: "pipe",
-      },
-    )
-    child.stdin.write(
-      JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: "dictum: проверь stdin" }),
-    )
-    child.stdin.end()
+    await withTempDir(async (home) => {
+      const child = Bun.spawn(
+        [process.execPath, join(import.meta.dir, "../src/hosts/prompt-hook.ts")],
+        {
+          env: { ...process.env, HOME: home, CODEX_HOME: join(home, ".codex") },
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
+      )
+      child.stdin.write(
+        JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: "dictum: проверь stdin" }),
+      )
+      child.stdin.end()
 
-    const [exitCode, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ])
+      const [exitCode, stdout, stderr] = await Promise.all([
+        child.exited,
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+      ])
 
-    expect(exitCode).toBe(0)
-    expect(stderr).toBe("")
-    expect(JSON.parse(stdout).hookSpecificOutput.hookEventName).toBe("UserPromptSubmit")
+      expect(exitCode).toBe(0)
+      expect(stderr).toBe("")
+      expect(JSON.parse(stdout).hookSpecificOutput.hookEventName).toBe("UserPromptSubmit")
+    })
   })
 })
 

@@ -1,12 +1,12 @@
 {
   "name": "dictum-cli",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Prompt-polishing CLI with an MCP host-brain overlay: type or dictate a rough thought, get a clear, structured prompt — in your clipboard or right inside your coding agent",
   "type": "module",
   "bin": {
     "dictum": "bin/dictum.js"
   },
-  "files": ["bin", "src", "README.md", "LICENSE"],
+  "files": ["bin", "src", ".claude/commands/dictum.md", "README.md", "LICENSE"],
   "scripts": {
     "start": "bun run src/cli.ts",
     "build": "bun build --compile --minify --outfile dist/dictum src/cli.ts",

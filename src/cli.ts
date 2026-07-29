@@ -23,7 +23,8 @@ import {
 } from "./hosts/codex.ts"
 import { assertCursorRuleInstallable, installCursorMcp, installCursorRule } from "./hosts/cursor.ts"
 import { assertDevinRuleInstallable, installDevinMcp, installDevinRule } from "./hosts/devin.ts"
-import { runPromptHookFromStdin } from "./hosts/prompt-hook.ts"
+import { type ManagedFileStatus, inspectUserManagedFiles } from "./hosts/managed.ts"
+import { startPromptHook } from "./hosts/prompt-hook.ts"
 import { DICTUM_MCP_INSTRUCTIONS } from "./hosts/rule.ts"
 import { shellQuote } from "./hosts/shared.ts"
 import { startMcpServer } from "./mcp/server.ts"
@@ -37,10 +38,20 @@ import { createSttProvider } from "./stt/factory.ts"
 import { terminalChooser } from "./ui/choose.ts"
 import { type StopController, createStopController } from "./ui/keys.ts"
 import { StatusReporter } from "./ui/status.ts"
+import { checkForUpdates, detectInstallMethod, updateHint } from "./update.ts"
 
 const VERSION: string = pkg.version
 
-export type CliCommand = "run" | "doctor" | "mcp" | "prompt-hook" | "integrate" | "help" | "version"
+export type CliCommand =
+  | "run"
+  | "doctor"
+  | "mcp"
+  | "prompt-hook"
+  | "integrate"
+  | "status"
+  | "update-check"
+  | "help"
+  | "version"
 
 export type OutputFormat = "text" | "json"
 export type HostName = "claude" | "codex" | "cursor" | "devin"
@@ -67,6 +78,10 @@ export type CliOptions = {
   binary: string | undefined
   /** Install the host's project rule in the current working directory. */
   project: boolean
+  /** Emit command metadata as JSON (`status` and `version`). */
+  json: boolean
+  /** Check for a newer release; no updater is implemented. */
+  check: boolean
   /** Unknown / error message produced while parsing, if any. */
   error: string | undefined
 }
@@ -76,6 +91,9 @@ const HELP = `dictum — dictate (or type) a thought, get a polished prompt.
 Usage:
   dictum [options]            Record (or read --input/--text/stdin), polish, emit
   dictum doctor               Check microphone, STT, polisher and clipboard
+  dictum status [--json]      Show managed host-file status and canon drift
+  dictum update --check       Check GitHub for a newer Dictum release
+  dictum version [--json]     Show version
   dictum mcp                  Run as an MCP server (host-brain prompts + tools) over stdio
   dictum integrate <host> [--binary <path>] [--project]
                               Configure claude, codex, cursor, or devin
@@ -100,6 +118,8 @@ Options:
                               {v, original, polished, template, score, rationale}
       --binary <path>         Dictum binary path written to host configuration
       --project               Add a project rule for Cursor or Devin in CWD
+      --json                  Machine-readable output for status or version
+      --check                 Check for an update (with 'dictum update' only)
   -h, --help                  Show help
   -v, --version               Show version
 
@@ -133,6 +153,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
     host: undefined,
     binary: undefined,
     project: false,
+    json: false,
+    check: false,
     error: undefined,
   }
 
@@ -155,6 +177,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
         format: { type: "string" },
         binary: { type: "string" },
         project: { type: "boolean" },
+        json: { type: "boolean" },
+        check: { type: "boolean" },
       },
     })
   } catch (err) {
@@ -164,8 +188,11 @@ export function parseCliArgs(argv: string[]): CliOptions {
 
   const { values, positionals } = parsed
 
-  if (values.version === true) return { ...base, command: "version" }
-  if (values.help === true) return { ...base, command: "help" }
+  const json = values.json === true
+  const check = values.check === true
+
+  if (values.version === true) return { ...base, command: "version", json, check }
+  if (values.help === true) return { ...base, command: "help", json, check }
 
   let command: CliCommand = "run"
   let host: HostName | undefined
@@ -173,6 +200,13 @@ export function parseCliArgs(argv: string[]): CliOptions {
     const cmd = positionals[0]
     if (cmd === "doctor") {
       command = "doctor"
+    } else if (cmd === "status" && positionals.length === 1) {
+      command = "status"
+    } else if (cmd === "version" && positionals.length === 1) {
+      command = "version"
+    } else if (cmd === "update" && positionals.length === 1) {
+      if (!check) return { ...base, error: "Usage: dictum update --check" }
+      command = "update-check"
     } else if (cmd === "mcp") {
       command = "mcp"
     } else if ((cmd === "prompt-hook" || cmd === "codex-hook") && positionals.length === 1) {
@@ -234,6 +268,8 @@ export function parseCliArgs(argv: string[]): CliOptions {
     host,
     binary: str(values.binary),
     project: values.project === true,
+    json,
+    check,
     error: undefined,
   }
 }
@@ -405,6 +441,69 @@ async function runDoctor(): Promise<number> {
   return doctorExitCode(results)
 }
 
+function statusMarker(status: ManagedFileStatus): string {
+  if (status.status === "up-to-date") return "✓"
+  if (status.status === "absent") return "-"
+  return "!"
+}
+
+function formatManagedStatus(statuses: ManagedFileStatus[]): string {
+  const lines = ["dictum status", `version ${VERSION}`, ""]
+  if (statuses.length === 0) {
+    lines.push("No supported agent hosts detected.")
+    return `${lines.join("\n")}\n`
+  }
+  for (const status of statuses) {
+    const hashes =
+      status.hash === null
+        ? `expected ${status.expectedHash}`
+        : status.status === "stale"
+          ? `${status.hash} → ${status.expectedHash}`
+          : status.hash
+    lines.push(
+      `${statusMarker(status)} ${status.label}: ${status.status} (${hashes})\n  ${status.path}`,
+    )
+  }
+  if (statuses.some((status) => status.status === "stale")) {
+    lines.push("", "! Canon drift detected; startup self-heal will refresh marker-owned files.")
+  }
+  return `${lines.join("\n")}\n`
+}
+
+/** Read-only managed-host diagnostics. */
+async function runStatus(json: boolean): Promise<number> {
+  const hosts = await inspectUserManagedFiles()
+  if (json) {
+    process.stdout.write(
+      `${JSON.stringify({
+        version: VERSION,
+        drift: hosts.some((status) => status.status === "stale"),
+        hosts,
+      })}\n`,
+    )
+  } else {
+    process.stdout.write(formatManagedStatus(hosts))
+  }
+  return 0
+}
+
+/** Check only: this command never downloads or installs an update. */
+async function runUpdateCheck(): Promise<number> {
+  const endpoint = process.env.DICTUM_UPDATE_CHECK_URL?.trim() || undefined
+  const result = await checkForUpdates(VERSION, endpoint === undefined ? {} : { endpoint })
+  if (result.status === "available") {
+    process.stdout.write(
+      `Dictum ${result.latestVersion} available (current ${result.currentVersion}).\n` +
+        `Update: ${updateHint(detectInstallMethod())}.\n`,
+    )
+  } else if (result.status === "up-to-date") {
+    process.stdout.write(`Dictum ${result.currentVersion} is up to date.\n`)
+  } else {
+    process.stdout.write("Dictum could not check for updates.\n")
+  }
+  return 0
+}
+
 /**
  * Resolve the text input, if any. Explicit --text wins; otherwise piped stdin
  * (non-TTY, and no --input) is read as text. Returns undefined for the mic/file
@@ -552,18 +651,22 @@ export async function main(argv: string[]): Promise<number> {
 
   switch (opts.command) {
     case "version":
-      process.stdout.write(`${VERSION}\n`)
+      process.stdout.write(opts.json ? `${JSON.stringify({ version: VERSION })}\n` : `${VERSION}\n`)
       return 0
     case "help":
       process.stdout.write(HELP)
       return 0
     case "doctor":
       return runDoctor()
+    case "status":
+      return runStatus(opts.json)
+    case "update-check":
+      return runUpdateCheck()
     case "mcp":
       await startMcpServer()
       return 0
     case "prompt-hook":
-      await runPromptHookFromStdin()
+      await startPromptHook()
       return 0
     case "integrate":
       return runIntegrate(opts)

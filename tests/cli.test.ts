@@ -28,6 +28,20 @@ describe("parseCliArgs", () => {
     expect(o.error).toBeUndefined()
   })
 
+  test("status and structured version commands", () => {
+    expect(parseCliArgs(["status"]).command).toBe("status")
+    expect(parseCliArgs(["status", "--json"]).json).toBe(true)
+    expect(parseCliArgs(["version", "--json"])).toMatchObject({
+      command: "version",
+      json: true,
+    })
+  })
+
+  test("update exposes check-only scope", () => {
+    expect(parseCliArgs(["update", "--check"]).command).toBe("update-check")
+    expect(parseCliArgs(["update"]).error).toContain("update --check")
+  })
+
   test("integrate selects every supported host and carries setup options", () => {
     for (const host of ["claude", "codex", "cursor", "devin"] as const) {
       const parsed = parseCliArgs(["integrate", host, "--binary", "./dictum", "--project"])

@@ -1,3 +1,5 @@
+# <!-- Managed by the Dictum CLI. -->
+
 interface:
   display_name: "Dictum"
   short_description: "Polish a draft before Codex acts"

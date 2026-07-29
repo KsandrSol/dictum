@@ -10,6 +10,9 @@
  * exercises it on both the engines minimum and the release toolchain.
  */
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url))
@@ -37,28 +40,34 @@ const SMOKE = [
 describe("mcp stdio e2e (subprocess)", () => {
   test("requests written right before stdin EOF are all answered", async () => {
     const input = `${SMOKE.map((m) => JSON.stringify(m)).join("\n")}\n`
-    const proc = Bun.spawn([process.execPath, "run", "src/cli.ts", "mcp"], {
-      cwd: repoRoot,
-      stdin: new TextEncoder().encode(input), // written in full, then closed — the race
-      stdout: "pipe",
-      stderr: "ignore",
-    })
-    const killer = setTimeout(() => proc.kill("SIGKILL"), 15000)
-    const code = await proc.exited
-    clearTimeout(killer)
-    const out = await new Response(proc.stdout).text()
+    const home = await mkdtemp(join(tmpdir(), "dictum-mcp-stdio-e2e-"))
+    try {
+      const proc = Bun.spawn([process.execPath, "run", "src/cli.ts", "mcp"], {
+        cwd: repoRoot,
+        env: { ...process.env, HOME: home, CODEX_HOME: join(home, ".codex") },
+        stdin: new TextEncoder().encode(input), // written in full, then closed — the race
+        stdout: "pipe",
+        stderr: "ignore",
+      })
+      const killer = setTimeout(() => proc.kill("SIGKILL"), 15000)
+      const code = await proc.exited
+      clearTimeout(killer)
+      const out = await new Response(proc.stdout).text()
 
-    expect(code).toBe(0) // exited on EOF by itself, not via the kill
-    const replies = out
-      .trim()
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as { id?: number })
-    expect(replies.some((r) => r.id === 1)).toBe(true)
-    const brief = replies.find((r) => r.id === 2)
-    expect(brief).toBeDefined()
-    const text = JSON.stringify(brief)
-    expect(text).toContain("Do NOT act on the draft yet")
-    expect(text).not.toContain('"isError":true')
+      expect(code).toBe(0) // exited on EOF by itself, not via the kill
+      const replies = out
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { id?: number })
+      expect(replies.some((r) => r.id === 1)).toBe(true)
+      const brief = replies.find((r) => r.id === 2)
+      expect(brief).toBeDefined()
+      const text = JSON.stringify(brief)
+      expect(text).toContain("Do NOT act on the draft yet")
+      expect(text).not.toContain('"isError":true')
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
   }, 20000)
 })

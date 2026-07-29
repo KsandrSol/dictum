@@ -1,5 +1,6 @@
 /** Shared Codex / Claude Code UserPromptSubmit hook for Dictum's review gate. */
 
+import { reconcileUserManagedFiles, settleReconcile } from "./managed.ts"
 import { isJsonObject } from "./shared.ts"
 
 export type DictumMode = "polish" | "spec" | "decompose"
@@ -80,4 +81,11 @@ export async function runPromptHookFromStdin(
 
 export const runCodexHookFromStdin = runPromptHookFromStdin
 
-if (import.meta.main) await runPromptHookFromStdin()
+/** Run the production hook while overlapping bounded, best-effort self-heal. */
+export async function startPromptHook(): Promise<void> {
+  const reconcile = reconcileUserManagedFiles()
+  await runPromptHookFromStdin()
+  await settleReconcile(reconcile)
+}
+
+if (import.meta.main) await startPromptHook()

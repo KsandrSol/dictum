@@ -39,7 +39,11 @@ afterEach(async () => {
 
 describe("host integration CLI", () => {
   test("prompt-hook and its codex-hook alias gate only Dictum-prefixed prompts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dictum-prompt-hook-e2e-"))
+    temporaryRoots.push(root)
+    const env = { HOME: root, CODEX_HOME: join(root, ".codex") }
     const matching = await runCli(["prompt-hook"], {
+      env,
       stdin: JSON.stringify({
         hook_event_name: "UserPromptSubmit",
         prompt: "dictum spec: add CSV export",
@@ -51,6 +55,7 @@ describe("host integration CLI", () => {
     expect(output.hookSpecificOutput.additionalContext).toContain("Sanitized Dictum mode: spec")
 
     const alias = await runCli(["codex-hook"], {
+      env,
       stdin: JSON.stringify({
         hook_event_name: "UserPromptSubmit",
         prompt: "dictum: alias still works",
@@ -60,6 +65,7 @@ describe("host integration CLI", () => {
     expect(JSON.parse(alias.stdout).hookSpecificOutput.hookEventName).toBe("UserPromptSubmit")
 
     const ordinary = await runCli(["codex-hook"], {
+      env,
       stdin: JSON.stringify({
         hook_event_name: "UserPromptSubmit",
         prompt: "fix the failing test",

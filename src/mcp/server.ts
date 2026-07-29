@@ -36,6 +36,7 @@ import { ErrorCode, GetPromptRequestSchema, McpError } from "@modelcontextprotoc
 import { z } from "zod"
 import pkg from "../../package.json" with { type: "json" }
 import { type Config, loadConfig, templatesDir } from "../config.ts"
+import { reconcileUserManagedFiles } from "../hosts/managed.ts"
 import { DICTUM_MCP_INSTRUCTIONS } from "../hosts/rule.ts"
 import { createPolisher } from "../polisher/factory.ts"
 import { analyzePrompt } from "../polisher/rules.ts"
@@ -570,8 +571,10 @@ export function createMcpServer(deps: McpDeps): McpServer {
  * protocol channel, so all logging goes to stderr.
  */
 export async function startMcpServer(): Promise<void> {
+  const reconcile = reconcileUserManagedFiles()
   const config = await loadConfig()
   const modes = await availableTemplateNames(templatesDir())
+  await reconcile
   const server = createMcpServer({ polish: polishFromConfig(config), modes })
   const transport = new StdioServerTransport()
   await server.connect(transport)
